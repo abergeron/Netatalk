@@ -24,6 +24,9 @@
 #endif /* HAVE_FCNTL_H */
 #include <string.h>
 
+#ifdef MY_ABC_HERE
+#include <atalk/logger.h>
+#endif
 #include <atalk/dsi.h>
 #include <netatalk/endian.h>
 
@@ -40,13 +43,21 @@ size_t dsi_writeinit(DSI *dsi, void *buf, const size_t buflen _U_)
 
   /* figure out how much data we have. do a couple checks for 0 
    * data */
-  header = ntohl(dsi->header.dsi_code);
+  header = ntohl(dsi->header.dsi_doff);
+#ifdef MY_ABC_HERE
+  // B#26372,#25530: check corrupted dsi packet.
+  // the dsi_code (data offset) should less then total length
+  if (DSI_DATASIZ < header || ntohl(dsi->header.dsi_len) < header) {
+	  LOG(log_error, logtype_afpd,"Found corrupted dsi packet ?! header=%u, dsi_len=%u", header, ntohl(dsi->header.dsi_len));
+	  header = 0;
+  }
+#endif
   dsi->datasize = header ? ntohl(dsi->header.dsi_len) - header : 0;
   if (dsi->datasize > 0) {
-    len = MIN(sizeof(dsi->commands) - header, dsi->datasize);
+ 	len = MIN(DSI_DATASIZ - header, dsi->datasize);
     
     /* write last part of command buffer into buf */
-    memcpy(buf, dsi->commands + header, len);
+    memmove(buf, dsi->commands + header, len);
     
     /* recalculate remaining data */
     dsi->datasize -= len;
@@ -70,6 +81,20 @@ size_t dsi_write(DSI *dsi, void *buf, const size_t buflen)
   }
   return 0;
 }
+
+#ifdef MY_ABC_HERE
+size_t syno_dsi_write(DSI *dsi, void *buf, const size_t buflen)
+{
+  size_t length;
+
+  if (((length = MIN(buflen, dsi->datasize)) > 0) &&
+      ((length = syno_dsi_stream_read(dsi, buf, length)) > 0)) {
+    dsi->datasize -= length;
+    return length;
+  }
+  return 0;
+}
+#endif
 
 /* flush any unread buffers. */
 void dsi_writeflush(DSI *dsi)

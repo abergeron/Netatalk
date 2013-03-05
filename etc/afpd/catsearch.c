@@ -519,8 +519,15 @@ static int catsearch(struct vol *vol,
     int num_rounds = NUM_ROUNDS;
     int cwd = -1;
     int error;
-        
-	if (*pos != 0 && *pos != cur_pos) {
+#ifdef MY_ABC_HERE
+	static int count = 0;
+	
+	/** Fix Bug #14137 */
+	if (*pos != 0 && (save_cidx == -1))
+#else
+	if (*pos != 0 && *pos != cur_pos)
+#endif
+	{
 		result = AFPERR_CATCHNG;
 		goto catsearch_end;
 	}
@@ -531,6 +538,9 @@ static int catsearch(struct vol *vol,
 	/* We need to initialize all mandatory structures/variables and change working directory appropriate... */
 	if (*pos == 0) {
 		clearstack();
+#ifdef MY_ABC_HERE
+		count = 0;
+#endif
 		if (dirpos != NULL) {
 			closedir(dirpos);
 			dirpos = NULL;
@@ -655,8 +665,15 @@ static int catsearch(struct vol *vol,
 				} 
 				*nrecs += r;
 				/* Number of matches limit */
+#ifdef MY_ABC_HERE
+				if (++count == rmatches) {
+					count = 0;
+					goto catsearch_pause;
+				}
+#else
 				if (--rmatches == 0) 
 					goto catsearch_pause;
+#endif
 				/* Block size limit */
 				if (rrbuf - rbuf >= 448)
 					goto catsearch_pause;

@@ -94,7 +94,12 @@ int tsockfd_create(char *host, char *port, int backlog)
 
     if ((ret = getaddrinfo(host, port, &hints, &servinfo)) != 0) {
         LOG(log_error, logtype_default, "tsockfd_create: getaddrinfo: %s\n", gai_strerror(ret));
+#ifdef MY_ABC_HERE
+		// B#26710: Return error when dns lookup failed
+        return -1;
+#else
         return 0;
+#endif
     }
 
     /* create a socket */

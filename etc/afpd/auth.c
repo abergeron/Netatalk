@@ -50,6 +50,19 @@ extern void afp_get_cmdline( int *ac, char ***av );
 #ifdef HAVE_ACLS
 #include "acls.h"
 #endif
+#ifdef MY_ABC_HERE
+#include <synosdk/user.h>
+#include <synosdk/file.h>
+#include <synosdk/wins.h>
+#include <synosdk/string.h>
+#endif
+#ifdef MY_ABC_HERE
+#include <synosdk/conf.h>
+#define MY_ABC_HERE
+#endif
+#ifdef MY_ABC_HERE
+extern void ad_setfugid(const uid_t id, const gid_t gid);
+#endif
 
 int afp_version = 11;
 static int afp_version_index;
@@ -77,6 +90,58 @@ static struct uam_obj uam_changepw = {"", "", 0, {{NULL, NULL, NULL, NULL}}, &ua
 
 static struct uam_obj *afp_uam = NULL;
 
+#ifdef MY_ABC_HERE
+static void SYNOAddLog(const char *szUserName, const char *szFromAddr)
+{
+	char szMsg[BUFSIZ] = {0};
+	char szPid[16] = {0};
+	int ret;
+	time_t  ttTime;
+
+	time(&ttTime);
+	bzero(szPid, sizeof(szPid));
+	bzero(szMsg, sizeof(szMsg));
+
+	sprintf(szPid, "%d", getpid());
+
+	/*  log to /tmp/apple/AT_LOG */
+	if (!szUserName) {
+		sprintf(szMsg, "%s\t%ld\tguest\t%s", szPid, ttTime, szFromAddr);
+	} else {
+		snprintf(szMsg, sizeof(szMsg), "%s\t%ld\t%s\t%s", szPid, ttTime, szUserName, szFromAddr);
+	}
+
+	if (0 > (ret = SLIBCFileSetLine(SZF_ATLOG, szPid, szMsg, 0))) {
+		LOG(log_error, logtype_afpd,  "Set AT_Log Error !!");
+	} else if (ret == 0) {
+		if (0 >= SLIBCFileAddLine(SZF_ATLOG, NULL, szMsg, OP_ADD_AFTER)) {
+			LOG(log_error, logtype_afpd,  "Add AT_Log Error!!");
+		}
+	}
+	/* call SYNOATLogSet */
+}
+
+/* Get the source addr of the client */
+static char *SzSYNOATGetAddr(AFPObj *obj)
+{
+	static char szAddr[64];
+
+	bzero(szAddr, sizeof(szAddr));
+	if (obj) {
+		if (obj->proto == AFPPROTO_ASP) {
+			ASP asp = obj->handle;
+
+			sprintf(szAddr, "%d.%d", ntohs(asp->asp_sat.sat_addr.s_net), asp->asp_sat.sat_addr.s_node);
+		} else if (obj->proto == AFPPROTO_DSI) {
+			DSI *dsi = obj->handle;
+			return (char *)getip_string((struct sockaddr *)&dsi->client);
+		}
+	} else {
+		LOG(log_error, logtype_afpd, "Invalid parameter.");
+	}
+	return szAddr;
+}
+#endif /* MY_ABC_HERE */
 
 void status_versions(char *data,
 #ifndef NO_DDP
@@ -258,16 +323,41 @@ static const char *print_groups(int ngroups, gid_t *groups)
 static int login(AFPObj *obj, struct passwd *pwd, void (*logout)(void), int expired)
 {
 #ifdef ADMIN_GRP
+#	ifdef MY_ABC_HERE
+	int isAdmin = 0;
+#	endif
     int admin = 0;
 #endif /* ADMIN_GRP */
+#ifdef MY_ABC_HERE
+	char szBuf[256] = {0};
+#endif /* MY_ABC_HERE */
 
     if ( pwd->pw_uid == 0 ) {   /* don't allow root login */
         LOG(log_error, logtype_afpd, "login: root login denied!" );
         return AFPERR_NOTAUTH;
     }
+#ifdef MY_ABC_HERE
+    if (SYNOUserCheckExpired(pwd->pw_name) == 1) {
+        LOG(log_error, logtype_afpd, "login: %s is expired!", pwd->pw_name);
+        return AFPERR_NOTAUTH; 
+	}
+    if (!strcmp(pwd->pw_name, SZ_GUEST)) {
+        if ((SLIBCFileGetKeyValue(SZF_CUSTOM_DEF, "guestsupport", szBuf, sizeof(szBuf), 0) > 0)
+                    && (!strcmp(szBuf, "no")) ) {   
+            LOG(log_error, logtype_afpd, "%s(%d): invalid guest", __FUNCTION__, __LINE__);
+            return AFPERR_NOTAUTH;
+        }
+    }
 
+    LOG(log_info, logtype_afpd, "login %s (uid %d, gid %d) %s", pwd->pw_name,
+        pwd->pw_uid, pwd->pw_gid , afp_versions[afp_version_index].av_name);
+#else
     LOG(log_note, logtype_afpd, "%s Login by %s",
         afp_versions[afp_version_index].av_name, pwd->pw_name);
+#endif /* MY_ABC_HERE */
+#ifdef MY_ABC_HERE
+    SYNOAddLog(pwd->pw_name, SzSYNOATGetAddr(obj));
+#endif /* MY_ABC_HERE */
 
 #ifndef NO_DDP
     if (obj->proto == AFPPROTO_ASP) {
@@ -336,6 +426,22 @@ static int login(AFPObj *obj, struct passwd *pwd, void (*logout)(void), int expi
     }
 
 #ifdef ADMIN_GRP
+#	ifdef MY_ABC_HERE
+	if (setgid(pwd->pw_gid) < 0 || setegid(pwd->pw_gid) < 0) {
+		LOG(log_error, logtype_afpd, "setgid/setegid failed: %m");
+	}
+
+	isAdmin = SYNOGroupIsAdminGroupMem(obj->username);
+	if (-1 == isAdmin) {
+		LOG(log_error, logtype_afpd, "Fail to check admin group: "SLIBERR_FMT, SLIBERR_ARGS);
+	}
+	// admin group member => skip the following seteuid/setegid
+	if (1 == isAdmin) {
+		admin = 1;
+        ad_setfugid(pwd->pw_uid, pwd->pw_gid);
+        LOG(log_info, logtype_afpd, "admingroup member login -- %s", pwd->pw_name);
+    } else
+#	else
     LOG(log_debug, logtype_afpd, "obj->options.admingid == %d", obj->options.admingid);
 
     if (obj->options.admingid != 0) {
@@ -349,9 +455,10 @@ static int login(AFPObj *obj, struct passwd *pwd, void (*logout)(void), int expi
         LOG(log_info, logtype_afpd, "admin login -- %s", pwd->pw_name );
     }
     if (!admin)
+#	endif
 #endif /* ADMIN_GRP */
-#ifdef TRU64
     {
+#ifdef TRU64
         struct DSI *dsi = obj->handle;
         struct hostent *hp;
         char *clientname;
@@ -384,13 +491,13 @@ static int login(AFPObj *obj, struct passwd *pwd, void (*logout)(void), int expi
             LOG(log_error, logtype_afpd, "login: %s %s", pwd->pw_name, strerror(errno) );
             return AFPERR_BADUAM;
         }
-    }
 #else /* TRU64 */
-    if (setegid( pwd->pw_gid ) < 0 || seteuid( pwd->pw_uid ) < 0) {
-        LOG(log_error, logtype_afpd, "login: %s %s", pwd->pw_name, strerror(errno) );
-        return AFPERR_BADUAM;
-    }
+		if (setegid( pwd->pw_gid ) < 0 || seteuid( pwd->pw_uid ) < 0) {
+			LOG(log_error, logtype_afpd, "login: %s %s", pwd->pw_name, strerror(errno) );
+			return AFPERR_BADUAM;
+		}
 #endif /* TRU64 */
+    }
 
     LOG(log_debug, logtype_afpd, "login: supplementary groups: %s", print_groups(ngroups, groups));
 
@@ -735,7 +842,14 @@ int afp_login(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *rbufl
     *rbuflen = 0;
 
     if ( nologin & 1)
+#ifdef MY_ABC_HERE
+	{
+        LOG(log_info, logtype_afpd, "nologin == true");
         return send_reply(obj, AFPERR_SHUTDOWN );
+    }
+#else
+        return send_reply(obj, AFPERR_SHUTDOWN );
+#endif /* MY_ABC_HERE */
 
     if (ibuflen < 2)
         return send_reply(obj, AFPERR_BADVERS );
@@ -749,7 +863,14 @@ int afp_login(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *rbufl
         return send_reply(obj, i );
 
     if (ibuflen <= len)
+#ifdef MY_ABC_HERE
+	{
+        LOG(log_error, logtype_afpd, "ibuflen <= %d", len);
         return send_reply(obj, AFPERR_BADUAM);
+	}
+#else
+        return send_reply(obj, AFPERR_BADUAM);
+#endif
 
     ibuf += len;
     ibuflen -= len;
@@ -758,10 +879,24 @@ int afp_login(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *rbufl
     ibuflen--;
 
     if (!len || len > ibuflen)
+#ifdef MY_ABC_HERE
+	{
+        LOG(log_error, logtype_afpd, "len = %d, ibuflen = %d", len, ibuflen);
         return send_reply(obj, AFPERR_BADUAM);
+	}
+#else
+        return send_reply(obj, AFPERR_BADUAM);
+#endif
 
     if (NULL == (afp_uam = auth_uamfind(UAM_SERVER_LOGIN, ibuf, len)) )
+#ifdef MY_ABC_HERE
+    {
+        LOG(log_error, logtype_afpd, "auth_uamfind() fails"); 
         return send_reply(obj, AFPERR_BADUAM);
+    }
+#else
+        return send_reply(obj, AFPERR_BADUAM);
+#endif
     ibuf += len;
     ibuflen -= len;
 
@@ -771,7 +906,14 @@ int afp_login(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *rbufl
     i = afp_uam->u.uam_login.login(obj, &pwd, ibuf, ibuflen, rbuf, rbuflen);
 
     if (!pwd || ( i != AFP_OK && i != AFPERR_PWDEXPR))
+#ifdef MY_ABC_HERE
+    {
+        LOG(log_error, logtype_afpd, "%s:afp_uam->u.uam_login.login() fails, i = %d", afp_uam->uam_name, i);
         return send_reply(obj, i);
+    }
+#else /* MY_ABC_HERE */
+        return send_reply(obj, i);
+#endif
 
     return send_reply(obj, login(obj, pwd, afp_uam->u.uam_login.logout, ((i==AFPERR_PWDEXPR)?1:0)));
 }
@@ -789,10 +931,24 @@ int afp_login_ext(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *r
     *rbuflen = 0;
 
     if ( nologin & 1)
+#ifdef MY_ABC_HERE
+    {
+        LOG(log_error, logtype_afpd, "nologin == true");
         return send_reply(obj, AFPERR_SHUTDOWN );
+    }
+#else
+        return send_reply(obj, AFPERR_SHUTDOWN );
+#endif
 
     if (ibuflen < 5)
+#ifdef MY_ABC_HERE
+	{
+        LOG(log_error, logtype_afpd, "ibuflen < 5");
         return send_reply(obj, AFPERR_BADVERS );
+	}
+#else
+        return send_reply(obj, AFPERR_BADVERS );
+#endif
 
     ibuf++;
     ibuf++;     /* pad  */
@@ -807,7 +963,14 @@ int afp_login_ext(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *r
         return send_reply(obj, i );
 
     if (ibuflen <= len)
+#ifdef MY_ABC_HERE
+	{
+		LOG(log_error, logtype_afpd, "ibuflen <= %d", len);
         return send_reply(obj, AFPERR_BADUAM);
+	}
+#else
+        return send_reply(obj, AFPERR_BADUAM);
+#endif
 
     ibuf    += len;
     ibuflen -= len;
@@ -817,10 +980,24 @@ int afp_login_ext(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *r
     ibuflen--;
 
     if (!len || len > ibuflen)
+#ifdef MY_ABC_HERE
+	{
+		LOG(log_error, logtype_afpd, "len = %d, ibuflen = %d", len, ibuflen);
         return send_reply(obj, AFPERR_BADUAM);
+	}
+#else
+        return send_reply(obj, AFPERR_BADUAM);
+#endif
 
     if ((afp_uam = auth_uamfind(UAM_SERVER_LOGIN, ibuf, len)) == NULL)
+#ifdef MY_ABC_HERE
+	{
+		LOG(log_error, logtype_afpd, "auth_uamfind failed");
         return send_reply(obj, AFPERR_BADUAM);
+	}
+#else
+        return send_reply(obj, AFPERR_BADUAM);
+#endif
     ibuf    += len;
     ibuflen -= len;
 
@@ -898,7 +1075,14 @@ int afp_login_ext(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *r
     i = afp_uam->u.uam_login.login_ext(obj, username, &pwd, ibuf, ibuflen, rbuf, rbuflen);
 
     if (!pwd || ( i != AFP_OK && i != AFPERR_PWDEXPR))
+#ifdef MY_ABC_HERE
+	{
+        LOG(log_info, logtype_afpd, "%s:afp_uam->u.uam_login.login_ext() fails, i = %d", afp_uam->uam_name, i);
         return send_reply(obj, i);
+	}
+#else
+        return send_reply(obj, i);
+#endif
 
     return send_reply(obj, login(obj, pwd, afp_uam->u.uam_login.logout, ((i==AFPERR_PWDEXPR)?1:0)));
 }
@@ -911,6 +1095,9 @@ int afp_logincont(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *r
 
     if ( afp_uam == NULL || afp_uam->u.uam_login.logincont == NULL || ibuflen < 2 ) {
         *rbuflen = 0;
+#ifdef MY_ABC_HERE
+	LOG(log_error, logtype_afpd, "afp_uam == NULL || afp_uam->u.uam_login.logincont == NULL");
+#endif /* MY_ABC_HERE */
         return send_reply(obj, AFPERR_NOTAUTH );
     }
 
@@ -918,7 +1105,14 @@ int afp_logincont(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *r
     err = afp_uam->u.uam_login.logincont(obj, &pwd, ibuf, ibuflen,
                                          rbuf, rbuflen);
     if (!pwd || ( err != AFP_OK && err != AFPERR_PWDEXPR))
+#ifdef MY_ABC_HERE
+	{
+		LOG(log_info, logtype_afpd, ":%s:afp_uam->u.uam_login.login() fails, err = %d", afp_uam->uam_name, err);
+		return send_reply(obj, err);
+    }
+#else
         return send_reply(obj, err);
+#endif
 
     return send_reply(obj, login(obj, pwd, afp_uam->u.uam_login.logout, ((err==AFPERR_PWDEXPR)?1:0)));
 }
@@ -945,7 +1139,11 @@ int afp_logout(AFPObj *obj, char *ibuf _U_, size_t ibuflen  _U_, char *rbuf  _U_
  */
 int afp_changepw(AFPObj *obj, char *ibuf, size_t ibuflen, char *rbuf, size_t *rbuflen)
 {
+#ifdef MY_ABC_HERE
+    char username[MAXUSERLEN], *start = ibuf;
+#else
     char username[MACFILELEN + 1], *start = ibuf;
+#endif
     struct uam_obj *uam;
     struct passwd *pwd;
     size_t len;
@@ -1144,6 +1342,12 @@ int auth_load(const char *path, const char *list)
     while (p) {
         strlcpy(name + len, p, sizeof(name) - len);
         LOG(log_debug, logtype_afpd, "uam: loading (%s)", name);
+#ifdef MY_ABC_HERE
+		if (!strcmp(p, SZ_AFP_NGUEST_MOD)) {
+			p = strtok(NULL, ",");
+			continue;
+		}
+#endif
         /*
           if ((stat(name, &st) == 0) && (mod = uam_load(name, p))) {
         */

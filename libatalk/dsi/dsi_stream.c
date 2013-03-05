@@ -149,8 +149,12 @@ static size_t from_buf(DSI *dsi, u_int8_t *buf, size_t count)
             dsi->start = dsi->eof = dsi->buffer;
     }
 
+#ifdef MY_ABC_HERE
+    LOG(log_debug6, logtype_dsi, "from_buf(read: %u, unread:%u , space left: %u): returning %u", dsi->start - dsi->buffer, dsi->eof - dsi->start, dsi->end - dsi->eof, nbe);
+#else
     LOG(log_debug, logtype_dsi, "from_buf(read: %u, unread:%u , space left: %u): returning %u",
         dsi->start - dsi->buffer, dsi->eof - dsi->start, dsi->end - dsi->eof, nbe);
+#endif
 
     return nbe;
 }
@@ -251,8 +255,15 @@ int dsi_disconnect(DSI *dsi)
     dsi->proto_close(dsi);          /* 1 */
     dsi->flags &= ~(DSI_SLEEPING | DSI_EXTSLEEP); /* 2 */
     dsi->flags |= DSI_DISCONNECTED;
+#ifdef MY_ABC_HERE
+	// check username instead of euid
+	if (!dsi->AFPobj || !dsi->AFPobj->username) {
+		return -1;
+	}
+#else
     if (geteuid() == 0)
         return -1;
+#endif
     return 0;
 }
 
@@ -384,6 +395,38 @@ exit:
 }
 #endif
 
+#ifdef MY_ABC_HERE
+size_t syno_dsi_stream_read(DSI *dsi, void *data, const size_t length)
+{
+  size_t stored;
+  ssize_t len;
+
+  if (dsi->flags & DSI_DISCONNECTED)
+      return 0;
+
+  LOG(log_maxdebug, logtype_dsi, "syno_dsi_stream_read(%u bytes)", length);
+
+  stored = 0;
+  while (stored < length) {
+ 	  len = from_buf(dsi, (u_int8_t *) data + stored, length - stored);
+      LOG(log_maxdebug, logtype_dsi, "syno_buf_read(%u bytes): got: %d", length - stored, len);
+
+      if (len == -1 && (errno == EINTR || errno == EAGAIN)) {
+          LOG(log_maxdebug, logtype_dsi, "syno_dsi_stream_read: select read loop");
+          continue;
+      } else if (len > 0) {
+          stored += len;
+      } else {
+          break;
+      }
+  }
+
+  dsi->read_count += stored;
+
+  LOG(log_maxdebug, logtype_dsi, "syno_dsi_stream_read(%u bytes): got: %u", length, stored);
+  return stored;
+}
+#endif
 
 /*
  * Essentially a loop around buf_read() to ensure "length" bytes are read
@@ -416,7 +459,12 @@ size_t dsi_stream_read(DSI *dsi, void *data, const size_t length)
               dsi->flags |= DSI_GOT_ECONNRESET;
 #endif
           if (len || stored || dsi->read_count) {
-              if (! (dsi->flags & DSI_DISCONNECTED)) {
+#ifdef MY_ABC_HERE
+              if (! (dsi->flags & (DSI_DISCONNECTED | DSI_AFP_LOGGED_OUT))) 
+#else
+              if (! (dsi->flags & DSI_DISCONNECTED)) 
+#endif
+			  {
                   LOG(log_error, logtype_dsi, "dsi_stream_read: len:%d, %s",
                       len, (len < 0) ? strerror(errno) : "unexpected EOF");
               }

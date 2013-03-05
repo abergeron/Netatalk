@@ -28,11 +28,15 @@
 static struct db_param params;
 static int parse_err;
 
+#ifdef MY_ABC_HERE
+#define usock_maxlen() MAX_PATH_LEN
+#else
 static size_t usock_maxlen(void)
 {
     struct sockaddr_un addr;
     return sizeof(addr.sun_path) - 1;
 }
+#endif /* MY_ABC_HERE */
 
 static int make_pathname(char *path, char *dir, char *fn, size_t maxlen)
 {

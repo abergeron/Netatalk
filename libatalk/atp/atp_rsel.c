@@ -123,12 +123,23 @@ atp_rsel(
     for ( ;; ) {
 	rfunc = func;
 	if ( requesting ) {
+#ifdef MY_ABC_HERE
+		int nRetry = 0;
+tryagain:
+#endif /* MY_ABC_HERE */
 	    FD_ZERO( &fds );
 	    FD_SET( ah->atph_socket, &fds );
 	    tv.tv_sec = ah->atph_reqto;
 	    tv.tv_usec = 0;
 	    if (( c = select( ah->atph_socket + 1, &fds, NULL, NULL,
 		    &tv )) < 0 ) {
+#ifdef MY_ABC_HERE
+		    if ((errno == EINTR) && (nRetry < 3)) {
+			    usleep(100000);
+			    nRetry++;
+			    goto tryagain;
+		    }
+#endif /* MY_ABC_HERE */
 		atp_free_buf( abuf );
 		return( -1 );
 	    }

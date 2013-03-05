@@ -22,8 +22,13 @@
 */
 #if defined(NEED_RQUOTA) || defined(SOLARIS) || (defined(__GNU_LIBRARY__) && __GNU_LIBRARY__ < 6)
 
+#ifdef HAVE_RPC_RPC_H
 #include <rpc/rpc.h>
+#endif
+
+#ifdef HAVE_RPCSVC_RQUOTA_H
 #include <rpcsvc/rquota.h>
+#endif
 
 bool_t
 xdr_getquota_args(xdrs, objp)

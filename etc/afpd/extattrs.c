@@ -166,7 +166,12 @@ int afp_listextattr(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, char *rbuf,
             }
         }
 
-        if (adp) {
+        if (adp
+#ifdef MY_ABC_HERE
+// skip check since listxattr would check finder info xattr itself
+			&& !AD_IS_SYNCXATTR(adp)
+#endif
+			) {
             FinderInfo = ad_entry(adp, ADEID_FINDERI);
 
 #ifdef DEBUG

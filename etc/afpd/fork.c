@@ -35,6 +35,9 @@
 #include "directory.h"
 #include "desktop.h"
 #include "volume.h"
+#ifdef MY_ABC_HERE
+extern char *absupath(const struct vol *vol, struct dir *dir, char *u);
+#endif
 
 #ifdef DEBUG1
 #define Debug(a) ((a)->options.flags & OPTION_DEBUG)
@@ -351,6 +354,11 @@ int afp_openfork(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, char *rbuf, si
 
     ret = AFPERR_NOOBJ;
     if (access & OPENACC_WR) {
+#ifdef MY_ABC_HERE
+		if (fork == OPENFORK_DATA) {
+			ofork->of_fullpath = strdup(absupath(vol, dir, upath));
+		}
+#endif
         /* try opening in read-write mode */
         if (ad_open(upath, adflags, O_RDWR, 0, ofork->of_ad) < 0) {
             switch ( errno ) {
@@ -1188,6 +1196,14 @@ static int write_fork(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, s
     int		        endflag, eid, xlate = 0, err = AFP_OK;
     u_int16_t		ofrefnum;
     ssize_t             cc;
+	char            *rcvbuf = NULL;
+	size_t          rcvbuflen = 0;
+
+    if (obj->proto == AFPPROTO_DSI) {
+		DSI *dsi = obj->handle;
+		rcvbuf = (char *)dsi->commands;
+		rcvbuflen = DSI_CMDSIZ;
+	}
 
     /* figure out parameters */
     ibuf++;
@@ -1286,10 +1302,13 @@ static int write_fork(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, s
     case AFPPROTO_DSI:
         {
             DSI *dsi = obj->handle;
+#ifdef MY_ABC_HERE
+            u_int8_t b_recvfile_brokenpipe_recovery = 0;
+#endif /* MY_ABC_HERE */
 
             /* find out what we have already and write it out. */
-            cc = dsi_writeinit(dsi, rbuf, *rbuflen);
-            if (!cc || (cc = write_file(ofork, eid, offset, rbuf, cc, xlate)) < 0) {
+			cc = dsi_writeinit(dsi, rcvbuf, rcvbuflen);
+            if (!cc || (cc = write_file(ofork, eid, offset, rcvbuf, cc, xlate)) < 0) {
                 dsi_writeflush(dsi);
                 *rbuflen = 0;
                 ad_tmplock(ofork->of_ad, eid, ADLOCK_CLR, saveoff, reqcount, ofork->of_refnum);
@@ -1297,18 +1316,37 @@ static int write_fork(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, s
             }
             offset += cc;
 
-#if 0 /*def HAVE_SENDFILE_WRITE*/
-            if (!(xlate || obj->options.flags & OPTION_DEBUG)) {
+#ifdef MY_ABC_HERE
+			//if data in buffer, need to deal with it before using receive file.
+			//Just read from buffer but no read from socket!
+            while ((cc = syno_dsi_write(dsi, rcvbuf, rcvbuflen))) {
+                if ((cc = write_file(ofork, eid, offset, rcvbuf, cc, xlate)) < 0) {
+                    dsi_writeflush(dsi);
+                    *rbuflen = 0;
+                    ad_tmplock(ofork->of_ad, eid, ADLOCK_CLR, saveoff,
+                               reqcount,  ofork->of_refnum);
+                    LOG(log_error, logtype_afpd, "afp_write: write_file: failed (%d)", cc);
+                    return cc;
+                }
+                offset += cc;
+            }
+
+			//Start receive file
+            if (!(xlate || obj->options.flags & OPTION_DEBUG) && (dsi->datasize > 0)) {
                 if ((cc = ad_writefile(ofork->of_ad, eid, dsi->socket,
-                                       offset, dsi->datasize)) < 0) {
+                                       offset, 0, dsi->datasize)) != dsi->datasize) {
                     switch (errno) {
                     case EDQUOT :
                     case EFBIG :
                     case ENOSPC :
+                        LOG(log_error, logtype_afpd, "afp_write: ad_writefile: %s", strerror(errno) );
                         cc = AFPERR_DFULL;
                         break;
                     default :
                         LOG(log_error, logtype_afpd, "afp_write: ad_writefile: %s", strerror(errno) );
+                        dsi->datasize -= cc;
+                        offset += cc;
+                        b_recvfile_brokenpipe_recovery = 1;
                         goto afp_write_loop;
                     }
                     dsi_writeflush(dsi);
@@ -1321,23 +1359,43 @@ static int write_fork(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, s
                 offset += cc;
                 goto afp_write_done;
             }
-#endif /* 0, was HAVE_SENDFILE_WRITE */
+afp_write_loop:
+#endif /* MY_ABC_HERE */
 
             /* loop until everything gets written. currently
                     * dsi_write handles the end case by itself. */
-            while ((cc = dsi_write(dsi, rbuf, *rbuflen))) {
-                if ((cc = write_file(ofork, eid, offset, rbuf, cc, xlate)) < 0) {
+            while ((cc = dsi_write(dsi, rcvbuf, rcvbuflen))) {
+#ifdef MY_ABC_HERE
+                b_recvfile_brokenpipe_recovery = 0;
+#endif /* MY_ABC_HERE */
+                if ((cc = write_file(ofork, eid, offset, rcvbuf, cc, xlate)) < 0) {
                     dsi_writeflush(dsi);
                     *rbuflen = 0;
                     ad_tmplock(ofork->of_ad, eid, ADLOCK_CLR, saveoff,
                                reqcount,  ofork->of_refnum);
+                    LOG(log_error, logtype_afpd, "afp_write: write_file: failed (%d)", cc);
                     return cc;
                 }
                 offset += cc;
             }
+
+#ifdef MY_ABC_HERE
+            if (b_recvfile_brokenpipe_recovery) {
+                dsi_writeflush(dsi);
+                *rbuflen = 0;
+                ad_tmplock(ofork->of_ad, eid, ADLOCK_CLR, saveoff,
+                           reqcount,  ofork->of_refnum);
+                LOG(log_error, logtype_afpd, "afp_write: recvfile recovery: failed");
+                return AFPERR_MISC;
+            }
+#endif /* MY_ABC_HERE */
         }
         break;
     }
+
+#ifdef MY_ABC_HERE
+afp_write_done:
+#endif /* MY_ABC_HERE */
 
     ad_tmplock(ofork->of_ad, eid, ADLOCK_CLR, saveoff, reqcount,  ofork->of_refnum);
     if ( ad_meta_fileno( ofork->of_ad ) != -1 ) /* META */
@@ -1354,7 +1412,7 @@ static int write_fork(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, s
 
 afp_write_err:
     if (obj->proto == AFPPROTO_DSI) {
-        dsi_writeinit(obj->handle, rbuf, *rbuflen);
+        dsi_writeinit(obj->handle, rcvbuf, rcvbuflen);
         dsi_writeflush(obj->handle);
     }
     if (err != AFP_OK) {

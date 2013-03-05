@@ -486,7 +486,13 @@ special(char *file, int *nfs)
 
     while (( mnt = getmntent( mtab )) != NULL ) {
         /* check for local fs */
-        if ( (lstat( mnt->mnt_fsname, &sb ) == 0) && devno == sb.st_rdev) {
+#ifdef MY_ABC_HERE
+		// Can't use lstat since the /dev/vg* uses symbolic link
+        if ( (stat( mnt->mnt_fsname, &sb ) == 0) && devno == sb.st_rdev) 
+#else
+        if ( (lstat( mnt->mnt_fsname, &sb ) == 0) && devno == sb.st_rdev) 
+#endif
+		{
 	    found = 1;
 	    break;
         }
@@ -663,7 +669,12 @@ static int getquota( struct vol *vol, struct dqblk *dq, const u_int32_t bsize)
     }
 #else
     if ( vol->v_gvs == NULL ) {
-        if (( p = special( vol->v_path, &vol->v_nfs )) == NULL ) {
+#	ifdef MY_ABC_HERE
+        if (( p = special( (vol->v_flags & AFPVOL_SYNO_ENC) ? vol->v_encpath : vol->v_path, &vol->v_nfs )) == NULL )
+#	else
+        if (( p = special( vol->v_path, &vol->v_nfs )) == NULL )
+#	endif
+		{
             LOG(log_info, logtype_afpd, "getquota: special %s fails", vol->v_path );
             return( AFPERR_PARAM );
         }
@@ -710,8 +721,12 @@ static int getquota( struct vol *vol, struct dqblk *dq, const u_int32_t bsize)
 	return getfsquota(vol, uuid, dq);
 	   
 #else /* TRU64 */
+#	ifdef MY_ABC_HERE
+	return getfsquota(vol, uuid, dq);
+#	else
     return vol->v_nfs ? getnfsquota(vol, uuid, bsize, dq) :
            getfsquota(vol, uuid, dq);
+#	endif
 #endif /* TRU64 */
 }
 

@@ -55,6 +55,11 @@
 #define ENOATTR ENODATA
 #endif
 
+#ifdef MY_ABC_HERE
+#define sys_getxattr SYNOEAXattrGet
+#define sys_setxattr SYNOEAXattrSet
+#define sys_removexattr SYNOEAXattrRemove
+#endif
 
 /**********************************************************************************
  * EA VFS funcs for storing EAs in nativa filesystem EAs
@@ -239,7 +244,7 @@ int sys_list_eas(VFS_FUNC_ARGS_EA_LIST)
             /* its a symlink and client requested O_NOFOLLOW */
             ret = AFPERR_BADTYPE;
             goto exit;
-#ifdef HAVE_ATTROPEN            /* Solaris */
+#if defined(MY_ABC_HERE) || defined(HAVE_ATTROPEN)            /* Solaris */
         case ENOATTR:
             ret = AFP_OK;
             goto exit;
@@ -332,6 +337,16 @@ int sys_set_ea(VFS_FUNC_ARGS_EA_SET)
             LOG(log_debug, logtype_afpd, "sys_set_ea(\"%s/%s\", ea:'%s'): EA already exists",
                 getcwdpath(), uname, attruname);
             return AFPERR_EXIST;
+#ifdef MY_ABC_HERE
+        case ENOATTR:
+            LOG(log_debug, logtype_afpd, "sys_set_ea(\"%s/%s\", ea:'%s', size: %u, flags: %s|%s|%s): %s",
+                getcwdpath(), uname, attruname, attrsize, 
+                oflag & O_CREAT ? "XATTR_CREATE" : "-",
+                oflag & O_TRUNC ? "XATTR_REPLACE" : "-",
+                oflag & O_NOFOLLOW ? "O_NOFOLLOW" : "-",
+                strerror(errno));
+			return AFPERR_NOOBJ;
+#endif
         default:
             LOG(log_error, logtype_afpd, "sys_set_ea(\"%s/%s\", ea:'%s', size: %u, flags: %s|%s|%s): %s",
                 getcwdpath(), uname, attruname, attrsize, 
@@ -385,7 +400,13 @@ int sys_remove_ea(VFS_FUNC_ARGS_EA_REMOVE)
             LOG(log_debug, logtype_afpd, "sys_remove_ea(%s/%s): error: %s", uname, attruname, strerror(errno));
             return AFPERR_ACCESS;
         default:
+#ifdef MY_ABC_HERE
+			if (errno != ENOENT && errno != ENOATTR) {
+#endif
             LOG(log_error, logtype_afpd, "sys_remove_ea(%s/%s): error: %s", uname, attruname, strerror(errno));
+#ifdef MY_ABC_HERE
+			}
+#endif
             return AFPERR_MISC;
         }
     }

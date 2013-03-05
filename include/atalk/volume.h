@@ -15,6 +15,9 @@
 #include <atalk/cnid.h>
 #include <atalk/hash.h>
 #include <atalk/vfs.h>
+#ifdef MY_ABC_HERE
+#include <synosdk/fs.h>
+#endif
 
 #define AFPVOL_U8MNAMELEN   255 /* AFP3 sepc */
 #define AFPVOL_MACNAMELEN    27 /* AFP2 spec */
@@ -95,6 +98,21 @@ struct vol {
 #ifdef __svr4__
     int         v_qfd;
 #endif /*__svr4__*/
+
+#ifdef MY_ABC_HERE
+    /** v_encpath is used to save the real path of enc volume
+	 * used for quota detection.
+	 */
+    char	*v_encpath;
+    FSTYPE	v_fstype;
+#endif /* MY_ABC_HERE */
+#ifdef MY_ABC_HERE
+	int		v_sharestatus;
+#endif /* MY_ABC_HERE */
+#ifdef MY_ABC_HERE
+	int		v_recycled; // recycle bin is enabled or not
+	int		v_recycle_admin_only; // recycle bin is only accessed by Administrators or not
+#endif
 };
 
 #define AFPVOL_OPEN (1<<0)
@@ -139,12 +157,18 @@ struct vol {
 #define AFPVOL_ACLS      (1 << 24)   /* Volume supports ACLS */
 #define AFPVOL_SEARCHDB  (1 << 25)   /* Use fast CNID db search instead of filesystem */
 #define AFPVOL_NONETIDS  (1 << 26)   /* signal the client it shall do privelege mapping */
+#ifdef MY_ABC_HERE
+#define AFPVOL_SYNO_ENC	 (1 << 31)	 /* syno enc volume */
+#endif
 
 /* Extended Attributes vfs indirection  */
 #define AFPVOL_EA_NONE           0   /* No EAs */
 #define AFPVOL_EA_AUTO           1   /* try sys, fallback to ad (default) */
 #define AFPVOL_EA_SYS            2   /* Store them in native EAs */
 #define AFPVOL_EA_AD             3   /* Store them in adouble files */
+#ifdef MY_ABC_HERE
+#define AFPVOL_EA_SYNO           4   /* Store them in SynoEAStream files */
+#endif
 
 /* FPGetSrvrParms options */
 #define AFPSRVR_CONFIGINFO     (1 << 0)
@@ -180,6 +204,9 @@ int wincheck(const struct vol *vol, const char *path);
 #define VOLPBIT_ATTR_NONETIDS     (1 << 7)
 #define VOLPBIT_ATTR_EXT_ATTRS    (1 << 10)
 #define VOLPBIT_ATTR_ACLS         (1 << 11)
+#ifdef MY_ABC_HERE
+#define VOLPBIT_ATTR_CASE         (1 << 12)
+#endif
 #define VOLPBIT_ATTR_TM           (1 << 13)
 
 #define VOLPBIT_ATTR    0

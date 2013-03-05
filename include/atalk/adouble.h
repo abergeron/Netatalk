@@ -262,6 +262,11 @@ struct adouble {
 #else
     char        ad_data[AD_DATASZ_MAX];
 #endif
+#ifdef MY_ABC_HERE
+	char			*ad_df_path;
+	int             ad_smb_over;
+	int             ad_smb_attr;
+#endif
 };
 
 struct adouble_fops {
@@ -276,9 +281,10 @@ struct adouble_fops {
 #define ADFLAGS_DF        (1<<0)
 #define ADFLAGS_HF        (1<<1)
 #define ADFLAGS_DIR       (1<<2)
-/*
+#ifdef MY_ABC_HERE
+#define ADFLAGS_EA        (1<<15)
 #define ADFLAGS_NOADOUBLE (1<<3)
-*/
+#endif
 #define ADFLAGS_V1COMPAT  (1<<4)
 #define ADFLAGS_NOHF      (1<<5)  /* not an error if no ressource fork */
 #define ADFLAGS_RDONLY    (1<<6)  /* don't try readwrite */
@@ -293,6 +299,10 @@ struct adouble_fops {
 #define ADVOL_UNIXPRIV   (1 << 2) /* adouble unix priv */
 #define ADVOL_INVDOTS    (1 << 3) /* dot files (.DS_Store) are invisible) */
 #define ADVOL_NOADOUBLE  (1 << 4)
+#ifdef MY_ABC_HERE
+#define ADVOL_SYNCXATTR	 (1 << 8) /* sync finderinfo & resourcefork to filesystem xattr */
+#define AD_IS_SYNCXATTR(ad) (ad->ad_options & ADVOL_SYNCXATTR)
+#endif
 
 /* lock flags */
 #define ADLOCK_CLR      (0)
@@ -413,6 +423,9 @@ struct adouble_fops {
 #define ad_setentrylen(ad,eid,len) ((ad)->ad_eid[(eid)].ade_len = (len))
 #define ad_getentryoff(ad,eid)     ((ad)->ad_eid[(eid)].ade_off)
 #define ad_entry(ad,eid)           ((caddr_t)(ad)->ad_data + (ad)->ad_eid[(eid)].ade_off)
+#ifdef MY_ABC_HERE
+#define ad_getentryoff_hfs(ad,eid)     ((eid == ADEID_RFORK && (ad)->ad_options & ADVOL_SYNCXATTR) ? 0 : (ad)->ad_eid[(eid)].ade_off)
+#endif
 
 #define ad_get_HF_flags(ad) ((ad)->ad_resource_fork.adf_flags)
 #define ad_get_MD_flags(ad) ((ad)->ad_md->adf_flags)
@@ -446,6 +459,9 @@ extern int ad_setfuid     (const uid_t );
 extern uid_t ad_getfuid   (void );
 extern char *ad_dir       (const char *);
 extern char *ad_path      (const char *, int);
+#ifdef MY_ABC_HERE
+extern char *ad_path_syno (const char *, int);
+#endif
 extern char *ad_path_osx  (const char *, int);
 extern char *ad_path_ads  (const char *, int);
 extern char *ad_path_sfm  (const char *, int);
@@ -505,7 +521,11 @@ int sys_fsetxattr (int filedes, const char *name, const void *value, size_t size
 int sys_copyxattr (const char *src, const char *dst);
 
 /* ad_read.c/ad_write.c */
+#ifdef MY_ABC_HERE
+extern int     netatalk_sys_ftruncate(int fd, off_t length);
+#else
 extern int     sys_ftruncate(int fd, off_t length);
+#endif
 
 extern ssize_t ad_read (struct adouble *, const u_int32_t,
                             const off_t, char *, const size_t);
@@ -533,7 +553,11 @@ extern int ad_getdate (const struct adouble *, unsigned int, u_int32_t *);
 
 /* ad_attr.c */
 extern int       ad_setattr (const struct adouble *, const u_int16_t);
+#ifdef MY_ABC_HERE
+extern int       ad_getattr (struct adouble *, u_int16_t *);
+#else
 extern int       ad_getattr (const struct adouble *, u_int16_t *);
+#endif
 
 /* Note: starting with Netatalk 2.1 we do NOT alway set the name */
 extern int       ad_setname (struct adouble *, const char *);
@@ -552,11 +576,13 @@ extern int ad_readfile_init(const struct adouble *ad,
 				       const int end);
 #endif
 
-#if 0
-#ifdef HAVE_SENDFILE_WRITE
+#ifdef MY_ABC_HERE
 extern ssize_t ad_writefile (struct adouble *, const int,
                                  const int, off_t, const int, const size_t);
-#endif /* HAVE_SENDFILE_WRITE */
-#endif /* 0 */
+#endif /* MY_ABC_HERE */
+
+#ifdef MY_ABC_HERE
+int synoCreateTimeGet(char* szPath, time_t* pTime);
+#endif
 
 #endif /* _ATALK_ADOUBLE_H */

@@ -57,6 +57,12 @@ char *strchr (), *strrchr ();
 #ifdef CNID_DB
 #include <atalk/cnid.h>
 #endif /* CNID_DB*/
+#ifdef MY_ABC_HERE
+#include <synosdk/fs.h>
+#include <synosdk/share.h>
+#define SZ_VOL_TMPDIR "@tmp"
+#define SYNO_CNID_PATH "@pplepriv@te" 
+#endif
 
 #include "directory.h"
 #include "file.h"
@@ -66,6 +72,16 @@ char *strchr (), *strrchr ();
 #include "fork.h"
 #include "hash.h"
 #include "acls.h"
+
+#ifdef MY_ABC_HERE
+#include <synosdk/file.h>
+#include <synosdk/log.h>
+#include <synosdk/ldap.h>
+#include <synosdk/conf.h>
+#include <synosdk/share.h>
+#include <synosdk/service.h>
+#define SZ_SYNO_VETO_PATH "TheVolumeSettingsFolder/Network Trash Folder/TheFindByContentFolder/Temporary Items/"
+#endif
 
 extern int afprun(int root, char *cmd, int *outfd);
 
@@ -78,7 +94,9 @@ extern int afprun(int root, char *cmd, int *outfd);
 #endif
 
 /* Globals */
-struct vol *current_vol;        /* last volume from getvolbyvid() */
+#ifdef MY_ABC_HERE
+extern struct vol *current_vol;        /* last volume from getvolbyvid() */
+#endif
 
 static struct vol *Volumes = NULL;
 static u_int16_t    lastvid = 0;
@@ -138,6 +156,7 @@ struct vol_option {
     int i_value;
 };
 
+#ifndef MY_ABC_HERE
 typedef struct _special_folder {
     const char *name;
     int precreate;
@@ -154,14 +173,463 @@ static const _special_folder special_folders[] = {
     {"TheVolumeSettingsFolder",  0,     0,  1},
 #endif
     {NULL, 0, 0, 0}};
+#endif /* !MY_ABC_HERE */
 
 /* Forward declarations */
+#ifndef MY_ABC_HERE
 static void handle_special_folders (const struct vol *);
+#endif
 static void deletevol(struct vol *vol);
 static void volume_free(struct vol *vol);
 static void check_ea_sys_support(struct vol *vol);
 static char *get_vol_uuid(const AFPObj *obj, const char *volname);
+#ifdef MY_ABC_HERE
+static int SYNOAppleReadvolfile(AFPObj *obj);
+static int SYNOAppleLoadVol(AFPObj *obj, const PSLIBSZLIST plistShareName, const PSYNOUSER pUser);
+static int synoAppleCheckPerm(const char *szVolName, const char *szUser);
+#else
 static int readvolfile(AFPObj *obj, struct afp_volume_name *p1,char *p2, int user, struct passwd *pwent);
+#endif /* MY_ABC_HERE */
+
+#ifdef MY_ABC_HERE
+#define SYNO_AT_MAX_DB_PATH (SYNO_SHARENAME_UTF8_MAX + MAX_LEN_VOL_PATH)
+
+/**
+  Move the .AppleDB to somewhere normal users could not reach
+   /volumeXXX/sharename --> DB path: /volumeXXX/@tmp/@pplepriv@te/sharename
+   if /volumeXXX/@tmp not exist, then try to use a available one 
+TODO: maybe the cnid db could move out from @tmp since it should be consistent now
+  @param szVolPath  The original volume path.
+  @return  Upon successful completion, the generated DB directory path is 
+  returned; otherwise the value NULL is returned.
+ */
+/** Get a DB path like: /volume1/@tmp/@pplepriv@te/music
+ * Note: since the v_path of USB is like /volumeUSB1/usbshare
+ * but the share name is usbshare1.
+ * We need v_name as real share name.
+ */
+static char *SYNOGetDBPath(const char *szVolPath, const char *szVolName)
+{
+	char *pDbPath = NULL;
+	char szTmpPath[SYNO_AT_MAX_DB_PATH] = { 0 };
+	char *pch = NULL, *pShareName = NULL;
+	BOOL blFound = FALSE;
+	size_t i = 0;
+	struct stat stTmp;
+	PSLIBSZLIST pList = NULL;
+	FS_FILTER filter;
+
+	if (NULL == szVolPath || '/' != szVolPath[0] || NULL == szVolName) {
+		LOG(log_error, logtype_afpd, "Invalid vol path [%s],[%s]", szVolPath, szVolName);
+		return NULL;
+	}
+	pDbPath = calloc(sizeof(char), SYNO_AT_MAX_DB_PATH);
+	if (NULL == pDbPath) {
+		LOG(log_error, logtype_afpd, "no enough mem. %m");
+		return NULL;
+	}
+	// count the length of /volume1/"@tmp/@pplepriv@te/"sharename
+	if (strlen(szVolPath) + 18 >= SYNO_AT_MAX_DB_PATH) {
+		// no enough buffer size
+		LOG(log_error, logtype_afpd, "no enough buffer size. Need %d.", strlen(szVolPath) + 18);
+		return NULL;
+	}
+	// duplicate the input string 
+	StrCP(szTmpPath, szVolPath);
+	pShareName = strchr(szTmpPath + 1, '/');
+	if (NULL == pShareName) {
+		LOG(log_error, logtype_afpd, "Invalid vol path [%s]", szTmpPath);
+		return NULL;
+	}
+	*(pShareName++)= 0;
+	// pDbPath = /volumeX
+	snprintf(pDbPath, SYNO_AT_MAX_DB_PATH, "%s/%s", szTmpPath, SZ_VOL_TMPDIR);
+	// test whether /volumeXXX/@tmp exist
+	bzero(&stTmp, sizeof(stTmp));
+	if (0 != stat(pDbPath, &stTmp) || !S_ISDIR(stTmp.st_mode)) {
+		// choose first available @tmp of /volumeX
+		bzero(&filter, sizeof(filter));
+		filter.szPathPrefix = SZD_VOL;
+		filter.st = FS_READ_WRITE;
+		if (NULL == (pList = SLIBCSzListAlloc(512)) || 0 > FSPathEnum(&filter, &pList) || 
+			0 >= pList->nItem) {
+			LOG(log_error, logtype_afpd, "Fail to get an available @tmp." SLIBERR_FMT, SLIBERR_ARGS);
+			return NULL;
+		}
+		for (i = 0; i < pList->nItem; i++) {
+			if ((pch = strstr(SLIBCSzListGet(pList, i) + 1, "/"))) { // skip first "/"
+				*pch = 0;
+			}
+			snprintf(pDbPath, SYNO_AT_MAX_DB_PATH, "%s/%s", SLIBCSzListGet(pList, i), SZ_VOL_TMPDIR);
+			if (0 == stat(pDbPath, &stTmp) && S_ISDIR(stTmp.st_mode)) {
+				i = strlen(pDbPath);
+				snprintf(pDbPath+ i, SYNO_AT_MAX_DB_PATH - i, "/%s/%s", SYNO_CNID_PATH, szVolName);
+				blFound = TRUE;
+				break;
+			}
+		}
+		SLIBCSzListFree(pList);
+		if (!blFound) {
+			LOG(log_error, logtype_afpd, "No available /volumeX/@tmp for %s !", szVolPath);
+			return NULL;
+		}
+	} else {
+		// compose  "/volumeX/@tmp/@pplepriv@te/sharenmae"
+		i = strlen(pDbPath);
+		snprintf(pDbPath+ i, SYNO_AT_MAX_DB_PATH - i, "/%s/%s", SYNO_CNID_PATH, szVolName);
+	}
+	if ((mkdir(pDbPath, 0777) == 0) || (errno == EEXIST)) {
+		return pDbPath;
+	}
+
+	pch = pDbPath;
+	while ((pch = strchr(pch + 1, '/')) != NULL) {
+		*pch = '\0';
+		if (access(pDbPath, F_OK)) {
+			switch (errno) {
+			case ENOENT:
+				if (mkdir(pDbPath, 0777)) {
+					LOG(log_error, logtype_afpd, "%s(%d): fail to mkdir %s", __FILE__, __LINE__, pDbPath);
+					return NULL;
+				}
+				break;
+			default:
+				LOG(log_error, logtype_afpd, "%s(%d): fail to access %s", __FILE__, __LINE__, pDbPath);
+				return NULL;
+			}
+		}
+		*pch='/';
+	}
+
+	return (mkdir(pDbPath, 0777)) ? NULL : pDbPath;
+}
+#endif /* MY_ABC_HERE */
+
+#ifdef MY_ABC_HERE
+#define DEL_SHARE   1
+#define ADD_SHARE   2
+
+/** check whether szPattern is in szLine */
+char *SzSynoAppleFind(char *szLine, char *szPattern)
+{
+	char szKey[SYNO_SHARENAME_UTF8_MAX+2];
+	char *pchRet = NULL;
+
+	if (!szLine || !szPattern) {
+		return NULL;
+	}
+
+	snprintf(szKey, sizeof(szKey), ",%s", szPattern);
+	if ((pchRet = strstr(szLine, szKey)) != NULL) { // found
+		return(pchRet+1);
+	}
+	snprintf(szKey, sizeof(szKey), "\t%s", szPattern);
+	if ((pchRet = strstr(szLine, szKey)) != NULL) { // found
+		return(pchRet+1);
+	}
+	if (((pchRet = strstr(szLine, szPattern)) != NULL) && (pchRet == szLine)) {
+		return pchRet;
+	}
+
+	return NULL;
+}
+
+/** Add/Delete the share from current in-use share list */
+int SynoAppleCurShare(char *szShare, int op, int fSetLog)
+{
+	char szKey[16], szLine[1024], szBuffer[1024], szShareName[SYNO_SHARENAME_UTF8_MAX + 2];
+	char *szToken, *pszHead, *pszTail;
+	int ret = -1;
+	uid_t uid = (uid_t) -1;
+    char *szUserName, *szFrom;
+
+	if (!szShare) {
+        return -1;
+	}
+
+	bzero(szKey, sizeof(szKey));
+	bzero(szBuffer, sizeof(szBuffer));
+	bzero(szLine, sizeof(szLine));
+	bzero(szShareName, sizeof(szShareName));
+
+	snprintf(szShareName, sizeof(szShareName), "%s,", szShare); // use ','as seperator
+	snprintf(szKey, sizeof(szKey), "%d", getpid());
+	if (SLIBCFileGetLine(SZF_ATLOG, szKey, szBuffer, sizeof(szBuffer), 0) < 0)
+		goto end;
+
+	//skip tab and newline in tail
+    pszTail = &szBuffer[strlen(szBuffer) - 1];
+	while (((*pszTail == '\t') || (*pszTail == '\n')) &&
+		   (pszTail >= szBuffer)) {
+		pszTail--;
+	}
+	pszTail++;
+	*pszTail = '\0';    
+	strcpy(szLine, szBuffer);
+
+    if ((szToken = strtok(szBuffer, "\t\n")) == NULL)
+		goto end;
+    if ((szToken = strtok(NULL, "\t\n")) == NULL)
+		goto end;
+    if ((szUserName = strtok(NULL, "\t\n")) == NULL)
+		goto end;
+    if ((szFrom = strtok(NULL, "\t\n")) == NULL)
+		goto end;
+	szToken = strtok( NULL, "\t\n");
+	
+    if (op == ADD_SHARE) {
+		if (szToken) {
+			if (!SzSynoAppleFind(szToken, szShareName)) {
+				strcat(szLine, szShareName);
+			} else {
+				ret = 1;
+			}
+		} else {
+			strcat(szLine, "\t");
+			strcat(szLine, szShareName);
+		}
+	    
+        if(fSetLog) {
+            uid = geteuid();	  
+            if ( seteuid(0) < 0) {
+                LOG(log_error, logtype_afpd, "SYNOCurAppleShare: unable to seteuid root: %s", strerror(errno));
+            }
+			SYNOATLogSet("conn", "info", "0x11900000", szUserName, szFrom, szShare,"");
+            if ( seteuid(uid) < 0) {
+                LOG(log_error, logtype_afpd, "SYNOCurAppleShare: unable to seteuid root: %s", strerror(errno));
+            }
+        }
+        
+    } else if (op == DEL_SHARE) {
+		if (szToken && (SzSynoAppleFind(szToken, szShareName) != NULL)) {
+			pszHead = SzSynoAppleFind( szLine, szShareName );
+			pszTail = pszHead + strlen(szShareName);
+			memmove(pszHead, pszTail, (strlen(pszTail) + 1));
+        } else {
+			ret = 1; // no shell to delete
+		}
+    } else {
+		goto end;
+	}
+
+	if (ret == 1 ) {
+		goto end;
+	}
+
+	if ((uid = geteuid())) {
+		seteuid(0);
+	}
+	if (SYNOLogICheckLog(SZF_ATLOG, "/tmp/apple/AT_LOG_TMP") < 0) {
+		LOG(log_error, logtype_afpd, " fail to clean the log ");	// clear log
+	}
+
+	if (SLIBCFileSetLine(SZF_ATLOG, szKey, szLine, 0) < 0) {
+		goto end;
+	}
+	
+	if (uid) {
+		seteuid(uid);
+	}
+	
+	ret = 1;
+    
+end:
+	return ret;
+}
+
+/**
+   This function return the access right of given user to 
+   the specific volume. It returns SHARE_WR if the
+   given user has read-wirte access to the volume, otherwise
+   it returns SHARE_RO. Since the user in the 
+   afpd.conf implies that he has either read-only or
+   read-wirte access to the volume.
+
+  @param szVolName The (UTF8) Share Name to lookup in smb.conf.
+  @param szUser The (UTF8) User Name to lookup.
+  @return <ul>
+	<li>0: SHARE_NA
+	<li>1: SHARE_RO
+	<li>2: SHARE_RW
+	</ul>
+ */
+static int synoAppleCheckPerm(const char *szVolName, const char *szUserName)
+{
+	int ret = SHARE_NA; /* set default to noaccess */
+	PSYNOSHARE pShare = NULL;
+
+	if ((NULL == szVolName) || (NULL == szUserName))
+		goto over;
+
+	if (!strcasecmp(szVolName, SZK_RSECTION_HOME)) {
+		ret = SHARE_RW;
+		goto over;
+	}
+	
+	if (0 > SYNOShareGet(szVolName, &pShare)) {
+		LOG(log_error, logtype_afpd, "Fail to get share of [%s]. " SLIBERR_FMT, szVolName, SLIBERR_ARGS);
+		goto over;
+	}
+	ret = SYNOShareUserPrivGet(szUserName, pShare);
+
+over:
+    if (pShare) {
+		SYNOShareFree(pShare);
+	}
+	// !! SYNOShareUserPrivGet would free pShare inside !!
+	LOG(log_debug, logtype_afpd, "volume name=%s, username=%s, accesswrite=%d(1-ro, 2-rw, 4-na)", szVolName, szUserName, ret);
+	return ret;
+}
+#endif /* MY_ABC_HERE */
+
+#ifdef MY_ABC_HERE
+#if 0 // comment out SYNOUpdateVolPerm(AFPObj *obj)
+/**
+  Update the volume ACL if smb.conf modified 
+  @return <ul>
+  <li>     0 : success 
+  <li>     -1: error
+  <li>     -2: home folder path changed
+  </ul>
+ */
+int SYNOUpdateVolPerm(AFPObj *obj)
+{
+	struct vol *pVolume = Volumes;
+	static time_t timeLastModified = 0;
+	struct stat st;
+	int fUpdate = 1;
+	char szVolNameUTF8[SYNO_SHARENAME_UTF8_MAX + 1] = {0};
+
+
+	if (stat(SZF_SMBCONF, &st) == -1) {
+		LOG(log_error, logtype_afpd, "Can not find %s", SZF_SMBCONF);
+		return -1;
+	}
+
+	if (timeLastModified == 0) {
+		time_t timeNow;
+
+		timeNow = time(NULL);
+		if ((timeNow - timeLastModified) > 30) {
+			// the file is not modified within 30 secs, not necessary to re-read
+			timeLastModified = st.st_mtime;
+		}
+	}
+
+	if (timeLastModified == st.st_mtime) {
+		//LOG(log_error, logtype_afpd, "the time is the same, need not to update ACL");
+		fUpdate = 0;
+	} else {
+		LOG(log_info, logtype_afpd, "smb.conf has been changed, volume acl is needed to be updated");
+	}
+	timeLastModified = st.st_mtime;    
+
+	while (pVolume != NULL) {
+		memset(szVolNameUTF8, 0, sizeof(szVolNameUTF8));
+		ucs2_to_charset(CH_UTF8, pVolume->v_name, szVolNameUTF8, sizeof(szVolNameUTF8));
+		if (!strcmp(szVolNameUTF8, "home")) {
+			if ((stat(pVolume->v_path, &st) == -1) && (errno == ENOENT)) {
+				LOG(log_error, logtype_afpd, "home folder [%s] not exist", pVolume->v_path);
+				return -2;
+			}
+		} else {// public shares
+			if (fUpdate == 1) {
+				switch(synoAppleCheckPerm(szVolNameUTF8, obj->username)) {
+					case SHARE_RO:
+						pVolume->v_flags |= AFPVOL_RO;
+					case SHARE_RW:
+						pVolume->v_flags &= ~(AFPVOL_RO);
+					case SHARE_NA:
+					default:
+						break;
+				}
+			}
+		}
+		pVolume = pVolume->v_next;        
+	}
+	return 0;
+}
+#endif
+
+/**
+ * Update the volume MAC codepage
+ * @param MacCharset The id return by add_charset()
+ * @param MacCodepage The value string of codepage in
+ * 					  synoinfo.conf
+ */
+void SYNOUpdateVolCodepage(int MacCharset, char *szMacCodepage)
+{
+	struct vol *pVolume = Volumes;
+    struct charset_functions *charset;
+
+	if ( (-1 == MacCharset) || (NULL == szMacCodepage) )
+	{
+		return;
+	}
+
+	LOG(log_info, logtype_afpd, "system codepage has been changed, volume codepage is needed to be updated");
+
+	while (NULL != pVolume) {
+		if ( NULL != pVolume->v_maccodepage )
+		{
+			free(pVolume->v_maccodepage);
+		}
+		pVolume->v_maccharset = MacCharset;
+		pVolume->v_maccodepage = strdup(szMacCodepage);
+
+		if ( NULL == ( charset = find_charset_functions(pVolume->v_maccodepage)) ||
+			!(charset->flags & CHARSET_CLIENT) ) {
+			LOG (log_error, logtype_afpd, "Fatal error: mac charset %s not supported", pVolume->v_maccodepage);
+			return;
+		}
+		pVolume = pVolume->v_next;
+	}
+}
+
+/**
+ * Get modified time of smb.conf
+ * 
+ * @return 0: error
+ *         >0: success
+ */
+static time_t SYNOVolFileGetMTime()
+{
+	time_t ret = 0;
+	struct stat st;
+
+	if (!stat( SZ_SMB_FILE, &st)) {
+		ret = st.st_mtime;
+	}
+
+	return ret;
+}
+
+/**
+ * Check if smb.conf is modified after last update of volume list.
+ * 
+ * @param obj
+ * 
+ * @return 1: modified
+ *         0: NOT modified
+ */
+static int SYNOVolFileIsModified(AFPObj *obj)
+{
+	int ret = 0;
+	time_t mtime = 0;
+
+	if (!obj) {
+		return ret;
+	}
+
+	mtime = SYNOVolFileGetMTime();
+	if (mtime > 0 && mtime > obj->syno_conf_mtime) {
+		obj->syno_conf_mtime = mtime;
+		ret = 1;
+	}
+
+	return ret;
+}
+#endif /* MY_ABC_HERE */
 
 static void volfree(struct vol_option *options, const struct vol_option *save)
 {
@@ -375,6 +843,7 @@ static char *volxlate(AFPObj *obj,
     return ret;
 }
 
+#ifndef MY_ABC_HERE
 /* to make sure that val is valid, make sure to select an opt that
    includes val */
 static int optionok(const char *buf, const char *opt, const char *val)
@@ -586,6 +1055,7 @@ static void volset(struct vol_option *options, struct vol_option *save,
 
     }
 }
+#endif /* !MY_ABC_HERE */
 
 /* ----------------- */
 static void showvol(const ucs2_t *name)
@@ -741,10 +1211,56 @@ static int creatvol(AFPObj *obj, struct passwd *pwd,
         free(volume);
         return -1;
     }
-
     volume->v_name = utf8_encoding()?volume->v_u8mname:volume->v_macname;
     volume->v_hide = hide;
     strcpy( volume->v_path, path );
+#ifdef MY_ABC_HERE
+	volume->v_fstype = SYNOGetFSType(volume->v_path, 0);
+	if (ISADFS(volume->v_fstype)) {
+		volume->v_adouble = AD_VERSION2_OSX;
+		volume->v_vfs_ea = AFPVOL_EA_NONE;
+		// FAT/NTFS might not have adouble file if its name reaches max len.
+		volume->v_flags |= AFPVOL_NOADOUBLE;
+	} else if (volume->v_fstype == FSTYPE_HFSPLUS) {
+		volume->v_adouble = AD_VERSION2;
+		volume->v_vfs_ea = AFPVOL_EA_SYS;
+		// Since we need adouble file to trigger the xattr sync
+		// Enable this flag to let netatalk create adouble file
+        volume->v_flags |= AFPVOL_CACHE;
+	} else {
+		volume->v_adouble = AD_VERSION2;
+		volume->v_vfs_ea = AFPVOL_EA_SYNO;
+	}
+#endif
+#ifdef MY_ABC_HERE
+	if (SYNOIndexIsEnabled(volume->v_path, NULL)) {
+		volume->v_sharestatus |= SHARE_STATUS_INDEXED;
+	}
+	if (SYNOFileIndexIsEnabled(volume->v_path)) {
+		volume->v_sharestatus |= SHARE_STATUS_FILEINDEXED;
+	}
+#endif
+#ifdef MY_ABC_HERE
+	volume->v_dbpath = SYNOGetDBPath(volume->v_path, volume->v_localname);
+	if (NULL == volume->v_dbpath) {
+		volume->v_dbpath = strdup(volume->v_path);
+	}
+	volume->v_cnidscheme = strdup(DEFAULT_CNID_SCHEME);
+	volume->v_cnidserver = strdup(Cnid_srv);
+	volume->v_cnidport = strdup(Cnid_port);
+	LOG(log_info, logtype_afpd, "creatvol: vol = [%s], db = [%s]", volume->v_path, volume->v_dbpath);
+#endif /* MY_ABC_HERE */
+#ifdef MY_ABC_HERE
+	if (0 > SYNORecycleStatusGet(name, &volume->v_recycled)) {
+		LOG(log_error, logtype_afpd, "Fail to get recycle status of [%s]. Disable it." SLIBERR_FMT, name, SLIBERR_ARGS);
+		volume->v_recycled = 0;
+	}
+	if (0 > SYNORecycleAdminOnlyStatusGet(name, &volume->v_recycle_admin_only)) {
+		LOG(log_error, logtype_afpd, "Fail to get recycle admin only status of [%s]. Disable it." SLIBERR_FMT, name, SLIBERR_ARGS);
+		volume->v_recycle_admin_only = 0;
+	}
+#endif
+
 
 #ifdef __svr4__
     volume->v_qfd = -1;
@@ -764,6 +1280,24 @@ static int creatvol(AFPObj *obj, struct passwd *pwd,
         volume->v_casefold = options[VOLOPT_CASEFOLD].i_value;
         volume->v_flags |= options[VOLOPT_FLAGS].i_value;
 
+#ifdef MY_ABC_HERE
+		if (volume->v_flags & AFPVOL_SYNO_ENC) {
+			SHARE_ENCRYPT_PARAM encParm;
+			bzero(&encParm, sizeof(SHARE_ENCRYPT_PARAM));
+			
+			if (0 > SYNOShareGet(name, &encParm.pShare)) {
+				LOG(log_error, logtype_afpd, "Fail to get share. " SLIBERR_FMT, SLIBERR_ARGS);
+				return -1;	
+			}
+			if (0 > SYNOShareEncryptPathGet(&encParm)) {
+				LOG(log_error, logtype_afpd, "Fail to get enc path. " SLIBERR_FMT, SLIBERR_ARGS);
+			}
+			volume->v_encpath = strdup(encParm.szEncPath);
+			if (NULL == volume->v_encpath) {
+				LOG(log_error, logtype_afpd, "Fail to allocate enc path. %m");
+			}
+		}
+#endif
         if (options[VOLOPT_EA_VFS].i_value)
             volume->v_vfs_ea = options[VOLOPT_EA_VFS].i_value;
 
@@ -778,6 +1312,12 @@ static int creatvol(AFPObj *obj, struct passwd *pwd,
             volume->v_ad_options |= ADVOL_INVDOTS;
         if ((volume->v_flags & AFPVOL_NOADOUBLE))
             volume->v_ad_options |= ADVOL_NOADOUBLE;
+#ifdef MY_ABC_HERE
+		if (volume->v_fstype == FSTYPE_HFSPLUS) {
+			// let ad_getattr read filesystem attr and write back by ad_setattr
+            volume->v_ad_options |= ADVOL_SYNCXATTR;
+		}
+#endif
 
         if (options[VOLOPT_PASSWORD].c_value)
             volume->v_password = strdup(options[VOLOPT_PASSWORD].c_value);
@@ -791,6 +1331,7 @@ static int creatvol(AFPObj *obj, struct passwd *pwd,
         if (options[VOLOPT_MACCHARSET].c_value)
             volume->v_maccodepage = strdup(options[VOLOPT_MACCHARSET].c_value);
 
+#ifndef MY_ABC_HERE
         if (options[VOLOPT_DBPATH].c_value)
             volume->v_dbpath = volxlate(obj, NULL, MAXPATHLEN, options[VOLOPT_DBPATH].c_value, pwd, path, name);
 
@@ -802,6 +1343,7 @@ static int creatvol(AFPObj *obj, struct passwd *pwd,
 
         if (options[VOLOPT_CNIDPORT].c_value)
             volume->v_cnidport = strdup(options[VOLOPT_CNIDPORT].c_value);
+#endif /* !MY_ABC_HERE */
 
         if (options[VOLOPT_UMASK].i_value)
             volume->v_umask = (mode_t)options[VOLOPT_UMASK].i_value;
@@ -815,10 +1357,12 @@ static int creatvol(AFPObj *obj, struct passwd *pwd,
         if (options[VOLOPT_DFLTPERM].i_value)
             volume->v_perm = (mode_t)options[VOLOPT_DFLTPERM].i_value;
 
+#ifndef MY_ABC_HERE
         if (options[VOLOPT_ADOUBLE].i_value)
             volume->v_adouble = options[VOLOPT_ADOUBLE].i_value;
         else
             volume->v_adouble = AD_VERSION;
+#endif
 
         if (options[VOLOPT_LIMITSIZE].i_value)
             volume->v_limitsize = options[VOLOPT_LIMITSIZE].i_value;
@@ -902,6 +1446,7 @@ static int creatvol(AFPObj *obj, struct passwd *pwd,
     return 0;
 }
 
+#ifndef MY_ABC_HERE
 /* ---------------- */
 static char *myfgets( char *buf, int size, FILE *fp)
 {
@@ -1125,6 +1670,7 @@ static void sortextmap( void)
         }
     }
 }
+#endif /* !MY_ABC_HERE */
 
 /* ----------------------
  */
@@ -1177,6 +1723,7 @@ static int volfile_changed(struct afp_volume_name *p)
  *      <extension> TYPE [CREATOR]
  *
  */
+#ifndef MY_ABC_HERE
 static int readvolfile(AFPObj *obj, struct afp_volume_name *p1, char *p2, int user, struct passwd *pwent)
 {
     FILE        *fp;
@@ -1365,6 +1912,7 @@ static int readvolfile(AFPObj *obj, struct afp_volume_name *p1, char *p2, int us
     p1->loaded = 1;
     return( 0 );
 }
+#endif /* !MY_ABC_HERE */
 
 /* ------------------------------- */
 static void volume_free(struct vol *vol)
@@ -1389,6 +1937,11 @@ static void volume_free(struct vol *vol)
 #endif /* FORCE_UIDGID */
     if (vol->v_uuid)
         free(vol->v_uuid);
+#ifdef MY_ABC_HERE
+	if (vol->v_encpath) {
+		free(vol->v_encpath);
+	}
+#endif
 }
 
 /* ------------------------------- */
@@ -1713,8 +2266,17 @@ static int getvolparams( u_int16_t bitmap, struct vol *vol, struct stat *st, cha
     ad_init(&ad, vol->v_adouble, vol->v_ad_options);
     if ( ad_open_metadata( vol->v_path, ADFLAGS_DIR, O_CREAT, &ad) < 0 ) {
         isad = 0;
+#ifdef MY_ABC_HERE
+		time_t ctime = 0;
+		if (0 == synoCreateTimeGet(vol->v_path, &ctime)) {
+	        vol->v_ctime = AD_DATE_FROM_UNIX(ctime);
+		} else {
+			LOG(log_debug, logtype_afpd, "ad_openat: cant get the create time");
+	        vol->v_ctime = AD_DATE_FROM_UNIX(st->st_mtime);
+		}
+#else
         vol->v_ctime = AD_DATE_FROM_UNIX(st->st_mtime);
-
+#endif
     } else if (ad_get_MD_flags( &ad ) & O_CREAT) {
         slash = strrchr( vol->v_path, '/' );
         if(slash)
@@ -1726,12 +2288,34 @@ static int getvolparams( u_int16_t bitmap, struct vol *vol, struct stat *st, cha
             memcpy(ad_entry( &ad, ADEID_NAME ), slash,
                    ad_getentrylen( &ad, ADEID_NAME ));
         }
+#ifdef MY_ABC_HERE
+		time_t ctime = 0;
+		if (0 == synoCreateTimeGet(vol->v_path, &ctime)) {
+		    vol_setdate(vol->v_vid, &ad, ctime);
+		} else {
+			LOG(log_debug, logtype_afpd, "ad_openat: cant get the create time");
+		    vol_setdate(vol->v_vid, &ad, st->st_mtime);
+		}
+#else
         vol_setdate(vol->v_vid, &ad, st->st_mtime);
+#endif
         ad_flush(&ad);
     }
     else {
         if (ad_getdate(&ad, AD_DATE_CREATE, &aint) < 0)
+#ifdef MY_ABC_HERE
+		{
+			time_t ctime = 0;
+			if (0 == synoCreateTimeGet(vol->v_path, &ctime)) {
+				vol->v_ctime = AD_DATE_FROM_UNIX(ctime);
+			} else {
+				LOG(log_debug, logtype_afpd, "ad_openat: cant get the create time");
+				vol->v_ctime = AD_DATE_FROM_UNIX(st->st_mtime);
+			}
+		}
+#else
             vol->v_ctime = AD_DATE_FROM_UNIX(st->st_mtime);
+#endif
         else
             vol->v_ctime = aint;
     }
@@ -1790,6 +2374,12 @@ static int getvolparams( u_int16_t bitmap, struct vol *vol, struct stat *st, cha
                     }
                 }
             }
+#ifdef MY_ABC_HERE
+			if (vol->v_fstype != FSTYPE_FAT) {
+				/* If not FAT => support case sensitive. */
+				ashort |= VOLPBIT_ATTR_CASE;
+			}
+#endif
             ashort = htons(ashort);
             memcpy(data, &ashort, sizeof( ashort ));
             data += sizeof( ashort );
@@ -1923,6 +2513,16 @@ static int stat_vol(u_int16_t bitmap, struct vol *vol, char *rbuf, size_t *rbufl
         return( ret );
     }
     *rbuflen = buflen + sizeof( bitmap );
+#ifdef MY_ABC_HERE
+    /* set connection log if the vol is accessed the first time */
+    /* 0x0f3f for MAC X; 0x0600 for MAC 9 */
+	// only afp_getvolparams would assign the following bitmap
+    if (bitmap == 0x0f3f || bitmap == 0x0600) {
+		char szVolNameUTF8[SYNO_SHARENAME_UTF8_MAX + 1] = {0};
+		ucs2_to_charset(CH_UTF8, vol->v_name, szVolNameUTF8, sizeof(szVolNameUTF8));
+		SynoAppleCurShare(szVolNameUTF8, ADD_SHARE, 1);
+    }
+#endif /* MY_ABC_HERE */
     bitmap = htons( bitmap );
     memcpy(rbuf, &bitmap, sizeof( bitmap ));
     return( AFP_OK );
@@ -1932,7 +2532,9 @@ static int stat_vol(u_int16_t bitmap, struct vol *vol, char *rbuf, size_t *rbufl
 /* ------------------------------- */
 void load_volumes(AFPObj *obj)
 {
+#ifndef MY_ABC_HERE
     struct passwd   *pwent;
+#endif /* !MY_ABC_HERE */
 
     if (Volumes) {
         int changed = 0;
@@ -1959,7 +2561,14 @@ void load_volumes(AFPObj *obj)
     } else {
         LOG(log_debug, logtype_afpd, "load_volumes: user: %s", obj->username);
     }
-
+#ifdef MY_ABC_HERE
+    /* We read the share information from /usr/syno/etc/smb.conf for unifying 
+     * share information. 
+     */
+	if (obj->username[0] != 0) {
+		SYNOAppleReadvolfile(obj);
+	}
+#else
     pwent = getpwnam(obj->username);
     if ( (obj->options.flags & OPTION_USERVOLFIRST) == 0 ) {
         readvolfile(obj, &obj->options.systemvol, NULL, 0, pwent);
@@ -1989,6 +2598,7 @@ void load_volumes(AFPObj *obj)
     if ( obj->options.flags & OPTION_USERVOLFIRST ) {
         readvolfile(obj, &obj->options.systemvol, NULL, 0, pwent );
     }
+#endif
 
     if ( obj->options.closevol ) {
         struct vol *vol;
@@ -2075,6 +2685,12 @@ int afp_getsrvrparms(AFPObj *obj, char *ibuf _U_, size_t ibuflen _U_, char *rbuf
     tv.tv_sec = AD_DATE_FROM_UNIX(tv.tv_sec);
     memcpy(data, &tv.tv_sec, sizeof( u_int32_t));
     data += sizeof( u_int32_t);
+#ifdef MY_ABC_HERE
+/* Fix max volume > 255: since afp only uses 1 byte to record volume count */
+	if (255 < vcnt) {
+		vcnt = 255;
+	}
+#endif
     *data = vcnt;
     return( AFP_OK );
 }
@@ -2117,6 +2733,24 @@ static int volume_codepage(AFPObj *obj, struct vol *volume)
 static int volume_openDB(struct vol *volume)
 {
     int flags = 0;
+#ifdef MY_ABC_HERE
+    uid_t			euid = 0;
+    gid_t			egid = 0;
+	uint64_t		bfree = 0;
+	struct statfs	fs;
+
+    /* Make sure the owner of db is root */
+    euid = geteuid();
+    egid = getegid();
+    if (0 > seteuid(0)) {
+	    LOG(log_error, logtype_afpd, "Warning! db is created by user %d instead of root", euid);
+	    euid = 0;
+    }
+    if (0 > setegid(0)) {
+	    LOG(log_error, logtype_afpd, "Warning! db is created by group %d instead of root", egid);
+	    egid = 0;
+    }
+#endif
 
     if ((volume->v_flags & AFPVOL_NODEV)) {
         flags |= CNID_FLAG_NODEV;
@@ -2153,8 +2787,12 @@ static int volume_openDB(struct vol *volume)
         }
     }
 #endif
-
-    volume->v_cdb = cnid_open(volume->v_path,
+    volume->v_cdb = cnid_open(
+#ifdef MY_ABC_HERE
+							  volume->v_dbpath,
+#else
+							  volume->v_path,
+#endif
                               volume->v_umask,
                               volume->v_cnidscheme,
                               flags,
@@ -2162,6 +2800,17 @@ static int volume_openDB(struct vol *volume)
                               volume->v_cnidport ? volume->v_cnidport : Cnid_port);
 
     if ( ! volume->v_cdb && ! (flags & CNID_FLAG_MEMORY)) {
+#ifdef MY_ABC_HERE
+		/* check weather the DB mounted volume is full (<1MB),
+		   if it's full, return -1. */
+		if (statfs(volume->v_dbpath, &fs) == 0) {
+			bfree = (VolSpace)fs.f_bavail * fs.f_frsize;
+
+			if (bfree < (1<<20)) {   // 1MB
+				LOG(log_error, logtype_afpd, "Disk free space of DB Path is not enough. %"PRIu64" bytes remains.", bfree);
+			}
+		}
+#endif
         /* The first attempt failed and it wasn't yet an attempt to open in-memory */
         LOG(log_error, logtype_afpd, "Can't open volume \"%s\" CNID backend \"%s\" ",
             volume->v_path, volume->v_cnidscheme);
@@ -2180,6 +2829,10 @@ static int volume_openDB(struct vol *volume)
         }
 #endif
     }
+#ifdef MY_ABC_HERE
+    if (euid) seteuid(euid);
+    if (egid) setegid(egid);
+#endif
 
     return (!volume->v_cdb)?-1:0;
 }
@@ -2408,7 +3061,7 @@ int afp_openvol(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_t 
     volume->v_root = dir;
     curdir = dir;
 
-    if (volume_openDB(volume) < 0) {
+	if (volume_openDB(volume) < 0) {
         LOG(log_error, logtype_afpd, "Fatal error: cannot open CNID or invalid CNID backend for %s: %s",
             volume->v_path, volume->v_cnidscheme);
         ret = AFPERR_MISC;
@@ -2418,11 +3071,12 @@ int afp_openvol(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_t 
     ret  = stat_vol(bitmap, volume, rbuf, rbuflen);
 
     if (ret == AFP_OK) {
+#ifndef MY_ABC_HERE
         handle_special_folders(volume);
+#endif /* MY_ABC_HERE */
         savevolinfo(volume,
                     volume->v_cnidserver ? volume->v_cnidserver : Cnid_srv,
                     volume->v_cnidport   ? volume->v_cnidport   : Cnid_port);
-
 
         /*
          * If you mount a volume twice, the second time the trash appears on
@@ -2447,6 +3101,13 @@ int afp_openvol(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_t 
             p = Trash;
             cname( volume, volume->v_root, &p );
         }
+#ifdef MY_ABC_HERE
+		char szVolNameUTF8[MAXUSERLEN] = {0};
+		/* Add vol->v_name to in-use share list */
+		// TODO: check the v_name is ucs2 or utf8 ??
+		ucs2_to_charset(CH_UTF8, volume->v_name, szVolNameUTF8, MAXUSERLEN);
+		SynoAppleCurShare(szVolNameUTF8, ADD_SHARE, 0);
+#endif /* MY_ABC_HERE */
         return( AFP_OK );
     }
 
@@ -2538,6 +3199,13 @@ int afp_closevol(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, char *rbuf _U_
     if (NULL == ( vol = getvolbyvid( vid )) ) {
         return( AFPERR_PARAM );
     }
+
+#ifdef MY_ABC_HERE
+	char szVolNameUTF8[SYNO_SHARENAME_UTF8_MAX + 1] = {0};
+	/* Remove vol->v_name from  in-use share list */
+	ucs2_to_charset(CH_UTF8, vol->v_name, szVolNameUTF8, sizeof(szVolNameUTF8));
+	SynoAppleCurShare(szVolNameUTF8, DEL_SHARE, 0);
+#endif /* MY_ABC_HERE */
 
     deletevol(vol);
     current_vol = NULL;
@@ -2757,6 +3425,7 @@ int wincheck(const struct vol *vol, const char *path)
 }
 
 
+#ifndef MY_ABC_HERE
 /*
  * precreate a folder
  * this is only intended for folders in the volume root
@@ -2861,6 +3530,383 @@ static void handle_special_folders (const struct vol * vol)
         }
     }
 }
+#endif /* !MY_ABC_HERE */
+
+#ifdef MY_ABC_HERE
+/**
+ * Since home service share won't be in share list, we should append it manually
+ */
+static int CheckAddUserHome(PSLIBSZLIST *pplistShareName, PSYNOUSER pUser)
+{
+	int	 iErr = -1;
+
+	if (SYNOServiceUserHomeIsEnabled(pUser->authType, &pUser->pw_uid)) {
+		if (0 > SLIBCSzListPush(pplistShareName, SZK_RSECTION_HOME)) {
+			goto ERR;
+		}
+	}
+	iErr = 0;
+ERR:
+	return iErr;
+}
+
+/** 
+Read and create share information by reading synology configuration file.
+
+@param szUsername The username who wants to access shares.
+@retval 0 Success
+@retval -1 Erro
+ */
+static int SYNOAppleReadvolfile(AFPObj *obj)
+{
+	PSYNOUSER pUser = NULL;	
+	char szVolPath[MAX_PATH_LEN+1] = {0};
+	int nShare = 0, err = -1;
+	PSLIBSZHASH pshGidlist = NULL;
+	PSLIBSZLIST plistShareName = NULL;
+
+
+	if (obj == NULL) {
+		LOG(log_error, logtype_afpd, "AFPObj == NULL");
+		return -1;
+	}
+
+	if (0 > SYNOUserGet(obj->username, &pUser)) {
+		LOG(log_error, logtype_afpd, "Unable to load volumes because [%s] is not a valid user", obj->username);
+		return -1;
+	}
+
+	strcpy(szVolPath, pUser->pw_dir);
+
+	if (NULL == (plistShareName = SLIBCSzListAlloc(512))) {
+		LOG(log_error, logtype_afpd, "unable to get memory size for share enumeration %d, SynoErr=" SLIBERR_FMT, nShare, SLIBERR_ARGS);
+		goto ERROR;
+	}
+
+	/* read and create accessable public shares */
+	if ((nShare = SYNOShareEnum(&plistShareName, SYNO_SHARE_ENUM_ALL | SYNO_SHARE_ENUM_ENCRYPT_DEC)) < 0) {
+		LOG(log_error, logtype_afpd, "Fail to enumerate share. SynoErr=" SLIBERR_FMT, SLIBERR_ARGS);
+		goto ERROR;
+	}
+	if (CheckAddUserHome(&plistShareName, pUser)) {
+		LOG(log_error, logtype_afpd, "Fail to check UserHome. SynoErr=" SLIBERR_FMT, SLIBERR_ARGS);
+		goto ERROR;
+	}
+
+	SYNOAppleLoadVol(obj, plistShareName, pUser);
+	obj->syno_conf_mtime = SYNOVolFileGetMTime();
+
+	err = 0;
+ERROR:
+
+	if (pUser) {
+		SYNOUserFree(pUser);
+	}
+	if (plistShareName) {
+		SLIBCSzListFree(plistShareName);
+	}
+	if (pshGidlist) SLIBCSzHashFree(pshGidlist);
+	return err;
+}
+
+/**
+ * Check if loading shares into volume list.
+ * ONLY access right 'RW'/'RO' can be added into list.
+ * 
+ * @param obj
+ * @param plistShareName
+ * 
+ * @return 0: success
+ *         -1: error
+ */
+static int SYNOAppleLoadVol(AFPObj *obj, const PSLIBSZLIST plistShareName, const PSYNOUSER pUser)
+{
+	int i=0, synoperm = SHARE_NA;
+	struct vol_option  options[VOLOPT_NUM];
+	PSYNOSHARE pshareInfo = NULL;
+	char *szVolName = NULL, *szSharePath = NULL, *pChr = NULL;
+	uid_t tmpID = geteuid();
+
+	if (!obj || !plistShareName) {
+		LOG(log_error, logtype_afpd, "Bad parameter");
+		return -1;
+	}
+	
+	/* I did not add volset() here, because we does not fill in other options
+	 * If we need to add other option like codepage..., we need to add it again.
+	 */
+	bzero(options, sizeof(options));
+	/* Since we don't look up AppleVolume.default as config file.
+	 * Set volume default options here.
+ 	 */
+	
+	/* Temporary testing options */
+	/*
+	 * Disable SearchDB since it's still not stable
+	options[VOLOPT_FLAGS].i_value |= AFPVOL_SEARCHDB;
+	*/
+	/*
+	 * Bug#26860: Disable cnid cache since it would try to update metadata of each file
+	 * And cause lots disk IO
+    options[VOLOPT_FLAGS].i_value |= AFPVOL_CACHE;
+	*/
+	// TODO maybe add noadouble to enhance small file transfer ??
+	options[VOLOPT_FLAGS].i_value |= (AFPVOL_NOHEX | AFPVOL_USEDOTS | AFPVOL_UNIX_PRIV | AFPVOL_TM);
+	options[VOLOPT_DPERM].i_value = 0777;
+	options[VOLOPT_FPERM].i_value = 0666;
+
+	// Add veto files/dir
+	options[VOLOPT_VETO].c_value = strdup(SZ_SYNO_VETO_PATH);
+	// switch to root permission since we may need to mkdir	
+	if (tmpID) {
+		seteuid(0);
+	}
+
+	//Add available share into Volume List.
+	for (i = 0; i < plistShareName->nItem; ++i) {
+		szVolName = SLIBCSzListGet(plistShareName, i);
+		szSharePath = NULL;
+		//add user home
+		if (!strcasecmp(SZK_RSECTION_HOME, szVolName)) {
+			// get home path ready
+			if (0 > SYNOFSMkdirP(pUser->pw_dir, &pChr, TRUE, pUser->pw_uid, pUser->pw_gid, 0755)) {
+				LOG(log_error, logtype_afpd, "Fail to mkdir for home [%s]. (stop at %s): %m", pUser->pw_dir, pChr);
+				continue;
+			}
+			szSharePath = pUser->pw_dir;
+			options[VOLOPT_FLAGS].i_value &= ~(AFPVOL_RO);
+		} else if (SHARE_NA != (synoperm = synoAppleCheckPerm(szVolName, obj->username))) {
+			if (0 != SYNOShareGet(szVolName, &pshareInfo)) {
+				LOG(log_error, logtype_afpd, "failed to get share, sharename=%s. SynoErr=" SLIBERR_FMT, szVolName, SLIBERR_ARGS);
+				continue;
+			}
+			if (pshareInfo->status & SHARE_STATUS_DISABLE) {
+				LOG(log_debug, logtype_afpd, "%s is not an available share", szVolName);
+				continue;
+			}
+			// bug #18625 :set enc flag to compose the real enc path as adding a new volume.
+			if (pshareInfo->status & SHARE_STATUS_DEC) {
+				options[VOLOPT_FLAGS].i_value |= AFPVOL_SYNO_ENC;
+			} else {
+				options[VOLOPT_FLAGS].i_value &= ~(AFPVOL_SYNO_ENC);
+			}
+			if (SHARE_RO == synoperm) {
+				options[VOLOPT_FLAGS].i_value |= AFPVOL_RO;
+			} else {
+				options[VOLOPT_FLAGS].i_value &= ~(AFPVOL_RO);
+			}
+			szSharePath = pshareInfo->szPath;
+		}
+		
+#	ifdef DEBUG
+		LOG(log_debug, logtype_afpd, "Create volume path[%s] name[%s] for user %s. with opt[%X]", szSharePath, szVolName, pUser->szName, options[VOLOPT_FLAGS].i_value);
+#	endif
+		if (szSharePath && -1 == creatvol(obj, NULL, szSharePath, szVolName, options, 1)) {
+			LOG(log_error, logtype_afpd, "Create volume path[%s] name[%s] failed for user %s.", szSharePath, szVolName, pUser->szName);
+		}
+	}
+
+	if (tmpID) {
+		seteuid(tmpID);
+	}
+
+	volfree(options, NULL);
+	if (pshareInfo) {
+		SYNOShareFree(pshareInfo);
+	}
+	return 1;
+}
+#endif /* MY_ABC_HERE */
+
+#ifdef MY_ABC_HERE
+static int synoApplePermChanged(int vflags, int synoperm)
+{
+	int ret = 1;
+
+	switch (synoperm) {
+		case SHARE_RO:
+			if (vflags & AFPVOL_RO) {
+				ret = 0;
+			}
+			break;
+		case SHARE_RW:
+			if (!(vflags & AFPVOL_RO)) {
+				ret = 0;
+			}
+			break;
+		case SHARE_NA: // NA is as changed. should be removed
+			break;
+		default:
+			LOG(log_error, logtype_afpd, "Invalid perm [%d]", synoperm);
+			break;
+	}
+	return ret;
+}
+
+static void SYNOAppleUpdateShareParam()
+{
+	struct vol *pVol;
+
+	for (pVol = Volumes; pVol; pVol = pVol->v_next) {
+#ifdef MY_ABC_HERE
+		if (0 > SYNORecycleStatusGet(pVol->v_localname, &pVol->v_recycled)) {
+			LOG(log_error, logtype_afpd, "Fail to get recycle status of [%s]. Disable it." SLIBERR_FMT, pVol->v_localname, SLIBERR_ARGS);
+			pVol->v_recycled = 0;
+		}
+		if (0 > SYNORecycleAdminOnlyStatusGet(pVol->v_localname, &pVol->v_recycle_admin_only)) {
+			LOG(log_error, logtype_afpd, "Fail to get recycle admin only status of [%s]. Disable it." SLIBERR_FMT, pVol->v_localname, SLIBERR_ARGS);
+			pVol->v_recycle_admin_only = 0;
+		}
+#endif
+#ifdef MY_ABC_HERE
+		if (SYNOIndexIsEnabled(pVol->v_path, NULL)) {
+			pVol->v_sharestatus |= SHARE_STATUS_INDEXED;
+		} else {
+			pVol->v_sharestatus &= ~SHARE_STATUS_INDEXED;
+		}
+		if (SYNOFileIndexIsEnabled(pVol->v_path)) {
+			pVol->v_sharestatus |= SHARE_STATUS_FILEINDEXED;
+		} else {
+			pVol->v_sharestatus &= ~SHARE_STATUS_FILEINDEXED;
+		}
+#endif
+	}
+}
+
+/**
+ * Remove Shares from volume list which:
+ *    1. Has no RO/RW privileges.
+ *    2. Not exist.
+ * 
+ * Notice: 
+ * This function will remove share from PSLIBSZLIST which has 
+ * been checked. 
+ * 
+ * @param plistShareName
+ */
+static void SYNOAppleRemoveUnusedVol(PSLIBSZLIST plistShareName, const char *szUserName)
+{
+	struct vol *pVol, *pVolNext, *pVolPrev;
+	char szVolNameUTF8[SYNO_SHARENAME_UTF8_MAX + 1] = {0};
+	int synoperm = SHARE_NA;
+	int i = 0;
+
+	if (!plistShareName) {
+		return;
+	}
+	/*
+	 *	Check all opened volumes. Free it if it does not exist.
+	 */
+	for (pVolPrev = pVol = Volumes; pVol; pVol = pVolNext) {
+		int idx = -1;
+
+		pVolNext = pVol->v_next;
+		
+		//Update ACL information
+		memset(szVolNameUTF8, 0, sizeof(szVolNameUTF8));
+		ucs2_to_charset(CH_UTF8, pVol->v_name, szVolNameUTF8, SYNO_SHARENAME_UTF8_MAX);
+		synoperm = synoAppleCheckPerm(szVolNameUTF8, szUserName);
+		idx = SLIBCSzListCaseFind(plistShareName, szVolNameUTF8);
+		// This volume hits in our share list, remove it from the list
+
+		LOG(log_info, logtype_afpd, "check share:[%s], idx=%d", szVolNameUTF8, idx);
+
+		// preserve it since the permission is the same.
+		if (idx >= 0 && !synoApplePermChanged(pVol->v_flags, synoperm)) {
+			pVolPrev = pVol;
+			SLIBCSzListRemove(plistShareName, idx);
+			continue;
+		}
+		LOG(log_info, logtype_afpd, "Remove share:[%s]", szVolNameUTF8);
+		// 1. Volume is not in our share list, maybe be deleted.
+		// 2. Volume is in our share list, but NO more permission to access it.
+		// Should remove this volume.
+		/* free the volume */
+		if (pVol == Volumes) {
+			pVolPrev = Volumes = pVolNext;
+		} else {
+			pVolPrev->v_next = pVolNext;
+		}
+
+		SynoAppleCurShare(szVolNameUTF8, DEL_SHARE, 0);
+		
+	    closevol(pVol);
+		volume_free(pVol);
+		free(pVol);
+	}
+
+	// Remove shares without permission
+	for (i = 0; i < plistShareName->nItem;) {
+		if (SHARE_NA == synoAppleCheckPerm(SLIBCSzListGet(plistShareName, i), szUserName)) {
+			SLIBCSzListRemove(plistShareName, i);
+			continue;
+		}
+		++i;
+	}
+}
+
+/**
+ * Update volumes according to newest smb.conf.
+ * If smb.conf is not modified yet, then return.
+ * 
+ * @param obj
+ * 
+ * @return 0: success
+ *         -1: error
+ */
+int SYNOAppleReloadVol(AFPObj *obj)
+{
+	int ret = -1;
+	PSYNOUSER pUser = NULL;
+	PSLIBSZLIST plistShareName = NULL;
+
+	if (!obj) {
+		return -1;
+	}
+	if (!SYNOVolFileIsModified(obj)) {
+		return 0;
+	} 
+	if (0 > SYNOUserGet(obj->username, &pUser)) {	
+		LOG(log_error, logtype_afpd, "Unable to load volumes because [%s] is not a valid user", obj->username);
+		goto ERROR;
+	}
+	//Prepare share list
+	if (NULL == (plistShareName = SLIBCSzListAlloc(512))) {
+		LOG(log_error, logtype_afpd, "Unable to get memory size for share enumeration");
+		goto ERROR;
+	}
+	SLIBCSzListSortItems(plistShareName, OP_UNICODE_SORTED);
+
+	if (SYNOShareEnum(&plistShareName, SYNO_SHARE_ENUM_ALL | SYNO_SHARE_ENUM_ENCRYPT_DEC) < 0) {
+		LOG(log_error, logtype_afpd, "Fail to enumerate share. SynoErr=" SLIBERR_FMT, SLIBERR_ARGS);
+		goto ERROR;
+	}
+	if (CheckAddUserHome(&plistShareName, pUser)) {
+		LOG(log_error, logtype_afpd, "Fail to check UserHome. SynoErr=" SLIBERR_FMT, SLIBERR_ARGS);
+		goto ERROR;
+	}
+
+	SYNOAppleRemoveUnusedVol(plistShareName, obj->username);
+
+	/*
+	 * Add Shares which does NOT exist in the Volume list.
+	 */
+	SYNOAppleLoadVol(obj, plistShareName, pUser);
+
+	SYNOAppleUpdateShareParam();
+
+	ret=0;
+ERROR:
+	if (pUser) {
+		SYNOUserFree(pUser);
+	}
+	if (plistShareName) {
+		SLIBCSzListFree(plistShareName);
+	}
+
+	return ret;
+}
+#endif /* MY_ABC_HERE */
 
 const struct vol *getvolumes(void)
 {

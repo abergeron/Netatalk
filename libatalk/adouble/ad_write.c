@@ -73,7 +73,11 @@ ssize_t ad_write(struct adouble *ad, const u_int32_t eid, off_t off, const int e
 	    }
 	    off = st.st_size - off -ad_getentryoff(ad, eid);
 	}
+#ifdef MY_ABC_HERE
+	r_off = ad_getentryoff_hfs(ad, eid) + off;
+#else
 	r_off = ad_getentryoff(ad, eid) + off;
+#endif
 	cc = adf_pwrite(&ad->ad_resource_fork, buf, buflen, r_off);
 
 	/* sync up our internal buffer  FIXME always false? */
@@ -94,7 +98,11 @@ ssize_t ad_write(struct adouble *ad, const u_int32_t eid, off_t off, const int e
  * the caller set the locks
  * ftruncate is undefined when the file length is smaller than 'size'
  */
+#ifdef MY_ABC_HERE
+int netatalk_sys_ftruncate(int fd, off_t length)
+#else
 int sys_ftruncate(int fd, off_t length)
+#endif
 {
 
 #ifndef  HAVE_PWRITE
@@ -151,8 +159,13 @@ char            c = 0;
 /* ------------------------ */
 int ad_rtruncate( struct adouble *ad, const off_t size)
 {
-    if ( sys_ftruncate( ad_reso_fileno(ad),
-	    size + ad->ad_eid[ ADEID_RFORK ].ade_off ) < 0 ) {
+    if (
+#ifdef MY_ABC_HERE
+		netatalk_sys_ftruncate(ad_reso_fileno(ad), size + ad_getentryoff_hfs(ad, ADEID_RFORK)) < 0
+#else
+		sys_ftruncate( ad_reso_fileno(ad), size + ad->ad_eid[ ADEID_RFORK ].ade_off ) < 0
+#endif
+		) {
 	return -1;
     }
     ad->ad_rlen = size;    
@@ -162,7 +175,13 @@ int ad_rtruncate( struct adouble *ad, const off_t size)
 
 int ad_dtruncate(struct adouble *ad, const off_t size)
 {
-    if (sys_ftruncate(ad_data_fileno(ad), size) < 0) {
+    if (
+#ifdef MY_ABC_HERE
+		netatalk_sys_ftruncate(ad_data_fileno(ad), size) < 0
+#else
+		sys_ftruncate(ad_data_fileno(ad), size) < 0
+#endif
+		) {
       return -1;
     }
     return 0;

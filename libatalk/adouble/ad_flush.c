@@ -31,6 +31,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#ifdef MY_ABC_HERE
+#include <attr/xattr.h>
+#endif
 
 #include "ad_private.h"
 #if AD_VERSION == AD_VERSION1
@@ -186,6 +189,14 @@ int ad_flush( struct adouble *ad)
             }
             return( -1 );
         }
+#ifdef MY_ABC_HERE
+		if (AD_IS_SYNCXATTR(ad)) {
+			setxattr(ad->ad_df_path, "com.apple.FinderInfo", ad_entry(ad, ADEID_FINDERI), ADEDLEN_FINDERI, 0);
+			if (ad_reso_fileno(ad) != -1) {
+				fsync(ad_reso_fileno(ad));
+			}
+		}
+#endif
     }
 
     return( 0 );
@@ -222,11 +233,24 @@ int ad_close( struct adouble *ad, int adflags)
         }
         ad_meta_fileno(ad) = -1;
         adf_lock_free(ad->ad_md);
+#ifdef MY_ABC_HERE
+		if (ad->ad_df_path) {
+			free(ad->ad_df_path);
+			ad->ad_df_path = NULL;
+		}
+#endif
     }
 
+#ifdef MY_ABC_HERE
+	if (!AD_IS_SYNCXATTR(ad) && ad->ad_flags != AD_VERSION1_SFM) {
+        return err;
+	}
+#else
     if (ad->ad_flags != AD_VERSION1_SFM) {
         return err;
     }
+#endif
+
 
     if ((adflags & ADFLAGS_DIR)) {
         return err;

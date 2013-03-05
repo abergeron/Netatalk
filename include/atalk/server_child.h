@@ -10,6 +10,11 @@
 #include <sys/types.h>
 #include <netatalk/endian.h>
 
+#ifdef MY_ABC_HERE
+#define SIGHUPGUEST     1205
+#define SIGHUPALL       1206
+#endif 
+
 /* useful stuff for child processes. most of this is hidden in 
  * server_child.c to ease changes in implementation */
 

@@ -40,16 +40,29 @@
 #include "status.h"
 #include "auth.h"
 #include "dircache.h"
+#ifdef MY_ABC_HERE
+#include <synosdk/conf.h>
+#include <synosdk/file.h>
+extern char *rgszCharsetName[NUM_CHARSETS];
+#endif /* MY_ABC_HERE */
 
 #ifndef MIN
 #define MIN(a, b)  ((a) < (b) ? (a) : (b))
 #endif /* MIN */
 
 /* FIXME CNID */
+#ifdef MY_ABC_HERE
+// B#26710: To avoid DNS translation
+const char *Cnid_srv = "127.0.0.1";
+#else
 const char *Cnid_srv = "localhost";
+#endif
 const char *Cnid_port = "4700";
-
+#ifdef MY_ABC_HERE
+#define OPTIONS "dn:f:s:uc:g:P:ptDS:TL:F:U:hIvVm:l:"
+#else
 #define OPTIONS "dn:f:s:uc:g:P:ptDS:TL:F:U:hIvVm:"
+#endif
 #define LENGTH 512
 
 /* return an option. this uses an internal array, so it's necessary
@@ -131,9 +144,13 @@ void afp_options_free(struct afp_options *opt,
 	free(opt->k5keytab);
     if (opt->unixcodepage && (opt->unixcodepage != save->unixcodepage))
 	free(opt->unixcodepage);
+#ifndef MY_ABC_HERE
+	// When codepage is changed, default_options->maccodepage also is changed in synoHUPCheck()
+	// maccodepage points to 2 different position in rgszCharsetName[]
+	// which should not be freed
     if (opt->maccodepage && (opt->maccodepage != save->maccodepage))
 	free(opt->maccodepage);
-
+#endif
     if (opt->ntdomain && (opt->ntdomain != save->ntdomain))
 	free(opt->ntdomain);
     if (opt->ntseparator && (opt->ntseparator != save->ntseparator))
@@ -149,6 +166,9 @@ void afp_options_free(struct afp_options *opt,
 /* initialize options */
 void afp_options_init(struct afp_options *options)
 {
+#ifdef MY_ABC_HERE
+	char szBuf[64] = {0};
+#endif
     memset(options, 0, sizeof(struct afp_options));
     options->connections = 20;
     options->pidfile = _PATH_AFPDLOCK;
@@ -177,11 +197,29 @@ void afp_options_init(struct afp_options *options)
     options->k5service = NULL;
     options->k5realm = NULL;
     options->k5keytab = NULL;
+#ifdef MY_ABC_HERE
+    options->unixcharset = CH_UTF8;
+    options->unixcodepage = rgszCharsetName[options->unixcharset];
+    if (SLIBCFileGetKeyValue(SZF_SYNO_INFO, "codepage",
+			    szBuf, sizeof(szBuf), 0) > 0)
+    {
+	    if ((charset_t)-1 != ( options->maccharset = add_charset(szBuf)) )
+	    {
+		    options->maccodepage = rgszCharsetName[options->maccharset];
+		    goto SET_CHARSET_DONE;
+	    }
+    }
+    options->maccharset = CH_SYNO_ENU;
+    options->maccodepage = rgszCharsetName[CH_SYNO_ENU];
+
+SET_CHARSET_DONE:
+#else
     options->unixcharset = CH_UNIX;
     options->unixcodepage = "LOCALE";
     options->maccharset = CH_MAC;
     options->maccodepage = "MAC_ROMAN";
-    options->volnamelen = 80; /* spec: 255, 10.1: 73, 10.4/10.5: 80 */
+#endif
+    options->volnamelen = 255; /* spec: 255, 10.1: 73, 10.4/10.5: 80 */
     options->ntdomain = NULL;
     options->ntseparator = NULL;
 #ifdef USE_SRVLOC
@@ -194,6 +232,7 @@ void afp_options_init(struct afp_options *options)
     options->tcp_sndbuf = 0;    /* 0 means don't change OS default */
     options->tcp_rcvbuf = 0;    /* 0 means don't change OS default */
     options->dsireadbuf = 12;
+    options->server_quantum = DSI_SERVQUANT_DEF;
 	options->mimicmodel = NULL;
     options->fce_fmodwait = 60; /* put fmod events 60 seconds on hold */
     options->adminauthuser = NULL;
@@ -775,6 +814,12 @@ int afp_options_parse(int ac, char **av, struct afp_options *options)
         case 'L':
             options->loginmesg = optarg;
             break;
+#ifdef MY_ABC_HERE
+		case 'l':
+            options->flags |= OPTION_CUSTOMLOG;
+			setuplog(optarg);
+			break;
+#endif
         case 'F':
             options->configfile = optarg;
             break;

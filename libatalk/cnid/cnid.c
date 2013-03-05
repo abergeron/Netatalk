@@ -184,8 +184,15 @@ static cnid_t valide(cnid_t id)
 {
   if (id == CNID_INVALID)
       return id;
-      
-  if (id < CNID_START) {
+#ifdef MY_ABC_HERE
+  /** B#24866: Here to validate the id returned by cnid_dbd.
+   * and it's network byte order.
+   */
+  if (ntohl(id) < CNID_START) 
+#else
+  if (id < CNID_START) 
+#endif
+  {
     static int err = 0;
     if (!err) {
         err = 1;

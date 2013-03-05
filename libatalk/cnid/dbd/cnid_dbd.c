@@ -32,6 +32,12 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netdb.h>
+#ifdef MY_ABC_HERE
+	#ifndef AI_NUMERICSERV
+// we always have defined(HAVE_STRUCT_ADDRINFO) && defined(HAVE_GETADDRINFO)
+	#define AI_NUMERICSERV     0
+	#endif
+#endif
 #include <time.h>
 
 #include <netatalk/endian.h>
@@ -334,8 +340,12 @@ static int dbd_rpc(CNID_private *db, struct cnid_dbd_rqst *rqst, struct cnid_dbd
     ret = readt(db->fd, rply, sizeof(struct cnid_dbd_rply), 0, ONE_DELAY);
 
     if (ret != sizeof(struct cnid_dbd_rply)) {
+#ifdef MY_ABC_HERE
+        LOG(log_info, logtype_cnid, "dbd_rpc: Error reading header from fd (db_dir %s): %s", db->db_dir, ret == -1 ? strerror(errno) : "closed");
+#else
         LOG(log_debug, logtype_cnid, "dbd_rpc: Error reading header from fd (db_dir %s): %s",
             db->db_dir, ret == -1 ? strerror(errno) : "closed");
+#endif
         rply->name = nametmp;
         return -1;
     }
@@ -598,7 +608,12 @@ cnid_t cnid_dbd_add(struct _cnid_db *cdb, const struct stat *st,
         id = CNID_INVALID;
         break;
     default:
+#ifdef MY_ABC_HERE
+        errno = CNID_ERR_DB;
+        return CNID_INVALID;
+#else
         abort();
+#endif
     }
 
     return id;
@@ -650,8 +665,13 @@ cnid_t cnid_dbd_get(struct _cnid_db *cdb, const cnid_t did, char *name, const si
         id = CNID_INVALID;
         errno = CNID_ERR_DB;
         break;
-    default:
+    default: 
+#ifdef MY_ABC_HERE
+        errno = CNID_ERR_DB;
+        return CNID_INVALID;
+#else
         abort();
+#endif
     }
 
     return id;
@@ -708,7 +728,13 @@ char *cnid_dbd_resolve(struct _cnid_db *cdb, cnid_t *id, void *buffer, size_t le
         name = NULL;
         break;
     default:
+#ifdef MY_ABC_HERE
+        errno = CNID_ERR_DB;
+		*id = CNID_INVALID;
+        return NULL;
+#else
         abort();
+#endif
     }
 
     return name;
@@ -786,7 +812,12 @@ cnid_t cnid_dbd_lookup(struct _cnid_db *cdb, const struct stat *st, const cnid_t
         id = CNID_INVALID;
         break;
     default:
+#ifdef MY_ABC_HERE
+        errno = CNID_ERR_DB;
+        return CNID_INVALID;
+#else
         abort();
+#endif
     }
 
     return id;
@@ -897,7 +928,12 @@ int cnid_dbd_update(struct _cnid_db *cdb, const cnid_t id, const struct stat *st
         errno = CNID_ERR_DB;
         return -1;
     default:
+#ifdef MY_ABC_HERE
+        errno = CNID_ERR_DB;
+        return -1;
+#else
         abort();
+#endif
     }
 }
 
@@ -999,7 +1035,12 @@ int cnid_dbd_delete(struct _cnid_db *cdb, const cnid_t id)
         errno = CNID_ERR_DB;
         return -1;
     default:
+#ifdef MY_ABC_HERE
+        errno = CNID_ERR_DB;
+        return -1;
+#else
         abort();
+#endif
     }
 }
 

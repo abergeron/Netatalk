@@ -36,6 +36,12 @@
 #include <atalk/unicode.h>
 #include "byteorder.h"
 
+#ifdef MY_ABC_HERE
+#include <synosdk/ea.h>
+#include <atalk/volume.h>
+struct vol *current_vol;        /* last volume from getvolbyvid() */
+#endif
+
 /* Given a trailing UTF-8 byte, get the contribution from it to
  * the Unicode scalar value for a particular bit shift amount
  */
@@ -99,7 +105,16 @@ static size_t utf8_pull(void *cd _U_, char **inbuf, size_t *inbytesleft,
 				LOG(log_debug, logtype_default, "short utf8 char");
 				goto badseq;
 			}
+#ifdef MY_ABC_HERE
+			if (c[0] == 0xEF && c[1] == 0x80 && c[2] == 0x8D && 
+					NULL != current_vol && ISADFS(current_vol->v_fstype)) {
+				uc = 0x0D;
+			} else {
+				uc = (ucs2_t) (((c[0] & 0x0f) << 12) | GETUCVAL(c[1],6) | GETUCVAL(c[2],0)) ;
+			}
+#else
 			uc = (ucs2_t) (((c[0] & 0x0f) << 12) | GETUCVAL(c[1],6) | GETUCVAL(c[2],0)) ;
+#endif
 			len = 3;
 		} else if ((c[0] & 0xf8) == 0xf0) {
 			/* 4 bytes, which happens for surrogate pairs only */
@@ -165,7 +180,18 @@ static size_t utf8_push(void *cd _U_, char **inbuf, size_t *inbytesleft,
 		/* Arrange conditionals in the order of most frequent occurrence for
 		   users of Latin-based chars */
 		if (uc < 0x80) {
+#ifdef MY_ABC_HERE
+			if (0x0D == uc && NULL != current_vol && ISADFS(current_vol->v_fstype)) {
+				c[0] = 0xEF;
+				c[1] = 0x80;
+				c[2] = 0x8D;
+				olen = 3;
+			} else {
+				c[0] = uc;
+			}
+#else
 			c[0] = uc;
+#endif
 		} else if (uc < 0x800) {
 			if (*outbytesleft < 2) {
 				LOG(log_debug, logtype_default, "short utf8 write");

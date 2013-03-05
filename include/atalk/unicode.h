@@ -63,11 +63,43 @@ typedef struct {
 #define CONV_REQMANGLE  (1<<14) /* mangling of returned name is required */
 #define CONV_REQESCAPE  (1<<15) /* espace unconvertable chars with :[UCS2HEX] */
 
+#ifdef MY_ABC_HERE
+typedef enum {
+CH_UCS2=0, 
+CH_UTF8, 
+CH_MAC, 
+CH_UNIX, 
+CH_UTF8_MAC,
+CH_MAC_ROMAN,
+CH_SYNO_ENU,
+CH_SYNO_FRE,
+CH_SYNO_GER,
+CH_SYNO_ITA,
+CH_SYNO_SPN,
+CH_SYNO_CHT,
+CH_SYNO_CHS,
+CH_SYNO_JPN,
+CH_SYNO_KRN,
+CH_SYNO_PTB,
+CH_SYNO_RUS,
+CH_SYNO_DAN,
+CH_SYNO_NOR,
+CH_SYNO_SVE,
+CH_SYNO_NLD,
+CH_SYNO_PLK,
+CH_SYNO_PTG,
+CH_SYNO_HUN,
+CH_SYNO_TRK,
+CH_SYNO_ARA,
+CH_NUM
+} charset_t;
+#define NUM_CHARSETS CH_NUM
+#else
 /* this defines the charset types used in samba */
 typedef enum {CH_UCS2=0, CH_UTF8=1, CH_MAC=2, CH_UNIX=3, CH_UTF8_MAC=4} charset_t;
 
 #define NUM_CHARSETS 5
-
+#endif /* !MY_ABC_HERE */
 /*
  *   for each charset we have a function that pulls from that charset to
  *     a ucs2 buffer, and a function that pushes to a ucs2 buffer

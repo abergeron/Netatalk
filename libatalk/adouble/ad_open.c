@@ -46,6 +46,19 @@
 
 #include "ad_private.h"
 #include <stdlib.h>
+#ifdef MY_ABC_HERE
+#include <synosdk/fs.h>
+#include <synosdk/ea.h>
+#endif
+
+#ifdef MY_ABC_HERE
+#include <atalk/volume.h>
+extern struct vol *current_vol;
+#endif
+
+#ifdef MY_ABC_HERE
+#include <synosdk/file.h>
+#endif
 
 #ifndef MAX
 #define MAX(a, b)  ((a) < (b) ? (b) : (a))
@@ -245,11 +258,21 @@ static int ad_update(struct adouble *ad, const char *path)
 
     /* bail if we can't get a lock */
     if (ad_tmplock(ad, ADEID_RFORK, ADLOCK_WR, 0, 0, 0) < 0)
+#ifdef MY_ABC_HERE
+	{
+		LOG(log_debug, logtype_default, "ad_update: fail to get lock. %m");
         goto bail_err;
+	}
+#else
+        goto bail_err;
+#endif
 
     fd = ad->ad_md->adf_fd;
 
     if (fstat(fd, &st)) {
+#ifdef MY_ABC_HERE
+		LOG(log_debug, logtype_default, "ad_update: fail to fstat. %m");
+#endif
         goto bail_lock;
     }
 
@@ -276,11 +299,20 @@ static int ad_update(struct adouble *ad, const char *path)
                   mmap(NULL, st.st_size + shiftdata,
                        PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)) ==
         MAP_FAILED) {
+#ifdef MY_ABC_HERE
+		LOG(log_error, logtype_default, "ad_update: file '%s' too big for update.", path);
+#endif /* MY_ABC_HERE */
         goto bail_lock;
     }
 
     /* last place for failure. */
-    if (sys_ftruncate(fd, st.st_size + shiftdata) < 0) {
+    if (
+#ifdef MY_ABC_HERE
+		netatalk_sys_ftruncate(fd, st.st_size + shiftdata) < 0
+#else
+		sys_ftruncate(fd, st.st_size + shiftdata) < 0
+#endif
+		) {
         munmap(buf, st.st_size + shiftdata);
         goto bail_lock;
     }
@@ -416,7 +448,13 @@ static int ad_convert(struct adouble *ad, const char *path)
 
     /* last place for failure. */
 
-    if (sys_ftruncate(fd, st.st_size + shiftdata) < 0) {
+    if (
+#ifdef MY_ABC_HERE
+		netatalk_sys_ftruncate(fd, st.st_size + shiftdata) < 0
+#else
+		sys_ftruncate(fd, st.st_size + shiftdata) < 0
+#endif
+		) {
         goto bail_lock;
     }
 
@@ -510,6 +548,13 @@ static void parse_entries(struct adouble *ad, char *buf,
         len = ntohl( len );
         buf += sizeof( len );
 
+
+#ifdef MY_ABC_HERE
+        if (eid && eid < ADEID_MAX && NULL != current_vol && ISADFS(current_vol->v_fstype)) {
+            ad->ad_eid[ eid ].ade_off = off;
+            ad->ad_eid[ eid ].ade_len = len;
+        } else
+#endif
         if (eid && eid < ADEID_MAX && off < sizeof(ad->ad_data) &&
             (off +len <= sizeof(ad->ad_data) || eid == ADEID_RFORK)) {
             ad->ad_eid[ eid ].ade_off = off;
@@ -607,16 +652,25 @@ static int ad_header_read(struct adouble *ad, struct stat *hst)
      * able to read a resource fork entry, bail. */
     nentries = len / AD_ENTRY_LEN;
     parse_entries(ad, buf, nentries);
-    if (!ad_getentryoff(ad, ADEID_RFORK)
-        || (ad_getentryoff(ad, ADEID_RFORK) > sizeof(ad->ad_data))
-        ) {
+    if (!ad_getentryoff(ad, ADEID_RFORK) ||
+#ifdef MY_ABC_HERE
+		((NULL != current_vol && !ISADFS(current_vol->v_fstype)) &&
+         (ad_getentryoff(ad, ADEID_RFORK) > sizeof(ad->ad_data)))
+#else
+         (ad_getentryoff(ad, ADEID_RFORK) > sizeof(ad->ad_data))
+#endif
+    ) {
         LOG(log_debug, logtype_default, "ad_header_read: problem with rfork entry offset.");
         errno = EIO;
         return -1;
     }
 
-    if (ad_getentryoff(ad, ADEID_RFORK) > header_len) {
-        LOG(log_debug, logtype_default, "ad_header_read: can't read in entries.");
+    if (ad_getentryoff(ad, ADEID_RFORK) > header_len
+#ifdef MY_ABC_HERE
+		&& (NULL != current_vol && !ISADFS(current_vol->v_fstype))
+#endif
+	) {
+       LOG(log_debug, logtype_default, "ad_header_read: can't read in entries.");
         errno = EIO;
         return -1;
     }
@@ -627,7 +681,15 @@ static int ad_header_read(struct adouble *ad, struct stat *hst)
             return 1; /* fail silently */
         }
     }
+#ifdef MY_ABC_HERE
+	if (AD_IS_SYNCXATTR(ad)) {
+		ad->ad_rlen = SYNOEAXattrGet(ad->ad_df_path, SZ_XATTR_RESOURCE_FORK, NULL, 0);
+	} else {
+#endif
     ad->ad_rlen = hst->st_size - ad_getentryoff(ad, ADEID_RFORK);
+#ifdef MY_ABC_HERE
+	}
+#endif
 
     /* fix up broken dates */
     if (ad->ad_version == AD_VERSION1) {
@@ -797,6 +859,32 @@ ad_path( const char *path, int adflags)
     return( pathbuf );
 }
 
+#ifdef MY_ABC_HERE
+// EX: path= /volume2/share/folder/file1
+//         ->/volume2/share/folder/@eadir/file1@SynoResource
+//      or ->/volume2/share/folder/@eadir/file1@SynoEAStream
+char *ad_path_syno( const char *path, int adflags )
+{
+    static char pathbuf[MAX_PATH_LEN + 1] = {0};
+	char cwd[MAX_PATH_LEN + 1] = {0};
+    const char *slash = NULL, *pName = NULL;
+    
+    if ((adflags & ADFLAGS_DIR) &&
+		(path && !strcmp(path, "."))) {
+        getcwd(cwd, sizeof(cwd));
+		path = cwd;
+    }
+	pName = (adflags & ADFLAGS_EA) ? SZ_EASTREAM : SZ_RESOURCE_FORK;
+
+	if (0 > SYNOEAPath(EATYPE_EASTREAM, path, pName, pathbuf, sizeof(pathbuf))) {
+		LOG(log_error, logtype_default, "Fail to get EA path." SLIBERR_FMT, SLIBERR_ARGS);
+		return NULL;
+	}
+
+    return( pathbuf );
+}
+#endif
+
 /* -------------------- */
 static int ad_mkrf(char *path)
 {
@@ -809,7 +897,12 @@ static int ad_mkrf(char *path)
     }
     *slash = '\0';
     errno = 0;
-    if ( ad_mkdir( path, 0777 ) < 0 ) {
+#ifdef MY_ABC_HERE
+    if ( SYNOEAMKDir( 0, path) < 0 )
+#else
+    if ( ad_mkdir( path, 0777 ) < 0 )
+#endif
+	{
         return -1;
     }
     *slash = '/';
@@ -990,6 +1083,19 @@ use_cur:
 /* ---------------- */
 static uid_t default_uid = -1;
 
+#ifdef MY_ABC_HERE
+static uid_t default_gid = -1;
+void ad_setfugid(const uid_t id, const gid_t gid)
+{
+    default_uid = id;
+    default_gid = gid;
+}
+gid_t ad_getfgid(void)
+{
+	return default_gid;
+}
+#endif /* MY_ABC_HERE */
+
 int ad_setfuid(const uid_t id)
 {
     default_uid = id;
@@ -1036,7 +1142,11 @@ static int ad_chown(const char *path, struct stat *stbuf)
     if (default_uid != (uid_t)-1) {
         /* we are root (admin) */
         id = (default_uid)?default_uid:stbuf->st_uid;
+#	ifdef MY_ABC_HERE
+        ret = lchown( path, default_uid, default_gid);
+#	else
         ret = lchown( path, id, stbuf->st_gid );
+#	endif
     }
 #endif
     return ret;
@@ -1170,7 +1280,11 @@ static struct adouble_fops ad_sfm = {
 };
 
 static struct adouble_fops ad_adouble = {
+#ifdef MY_ABC_HERE
+    &ad_path_syno,
+#else
     &ad_path,
+#endif
     &ad_mkrf,
     &ad_rebuild_adouble_header,
     &ad_check_size,
@@ -1192,6 +1306,12 @@ void ad_init(struct adouble *ad, int flags, int options)
         ad->ad_ops = &ad_sfm;
         ad->ad_md = &ad->ad_metadata_fork;
     }
+#ifdef MY_ABC_HERE
+    else if (flags == AD_VERSION2 && (options & ADVOL_SYNCXATTR)) {
+        ad->ad_ops = &ad_adouble;
+        ad->ad_md = &ad->ad_metadata_fork;
+	}
+#endif
     else {
         ad->ad_ops = &ad_adouble;
         ad->ad_md = &ad->ad_resource_fork;
@@ -1201,12 +1321,37 @@ void ad_init(struct adouble *ad, int flags, int options)
     ad_data_fileno(ad) = -1;
     ad_reso_fileno(ad) = -1;
     ad_meta_fileno(ad) = -1;
+#ifdef MY_ABC_HERE
+	ad->ad_df_path = NULL;
+	ad->ad_smb_over = 0;
+	ad->ad_smb_attr = 0;
+#endif
     /* following can be read even if there's no
      * meda data.
      */
     memset(ad->ad_eid, 0, sizeof( ad->ad_eid ));
     ad->ad_rlen = 0;
 }
+
+#ifdef MY_ABC_HERE
+static int ad_syno_hfsxattr_read(struct adouble *ad)
+{
+	int hoflags = 0, iErr = -1;
+
+	if (!AD_IS_SYNCXATTR(ad)) {
+		return 0;
+	}
+
+	// sync finder info
+	memset(ad_entry(ad, ADEID_FINDERI), 0, ADEDLEN_FINDERI);
+	if (0 > getxattr(ad->ad_df_path, SZ_XATTR_FINDERINFO, ad_entry(ad, ADEID_FINDERI), ADEDLEN_FINDERI)) {
+		LOG(log_warning, logtype_default, "%m, Fail to get xattr of [%s]!", ad->ad_df_path);
+		return -1;
+	}
+
+	return 0;
+}
+#endif
 
 /*!
  * Open data-, metadata(header)- or ressource fork
@@ -1256,6 +1401,12 @@ int ad_open( const char *path, int adflags, int oflags, int mode, struct adouble
     int         hoflags, admode;
     int                 st_invalid = -1;
     int                 open_df = 0;
+#ifdef MY_ABC_HERE
+	ssize_t blChmod = 0;
+	struct stat st;
+	uid_t uid = 0;
+	char ad_rfork_path[MAX_PATH_LEN + 1] = {0};
+#endif
 
     if (ad->ad_inited != AD_INITED) {
         ad->ad_inited = AD_INITED;
@@ -1372,6 +1523,14 @@ int ad_open( const char *path, int adflags, int oflags, int mode, struct adouble
             hoflags = oflags & ~(O_CREAT | O_EXCL);
             ad->ad_md->adf_fd = open( ad_p, hoflags | O_NOFOLLOW, 0 );
         }
+#ifdef MY_ABC_HERE
+		/* Bug#37417: Since NTFS would report file name too long for ._ file
+		 * and FAT would report ENOENT
+		 */
+		if (errno == ENAMETOOLONG) {
+			errno = ENOENT;
+		}
+#endif
     }
 
     if ( ad->ad_md->adf_fd < 0 ) {
@@ -1429,6 +1588,12 @@ int ad_open( const char *path, int adflags, int oflags, int mode, struct adouble
         }
     }
     AD_SET(ad->ad_md->adf_off);
+#ifdef MY_ABC_HERE
+	if (NULL != ad->ad_df_path) {
+		free(ad->ad_df_path);
+	}
+	ad->ad_df_path = strdup(fullpathname(path));
+#endif
 
     ad->ad_md->adf_refcount = 1;
     adf_lock_init(ad->ad_md);
@@ -1444,6 +1609,16 @@ int ad_open( const char *path, int adflags, int oflags, int mode, struct adouble
             errno = err;
             return -1;
         }
+#ifdef MY_ABC_HERE
+		// read xattr before ad_flush, otherwise the xattr would be wiped.
+		if (0 > ad_syno_hfsxattr_read(ad)) {
+            int err = errno;
+
+            ad_close(ad, adflags);
+            errno = err;
+            return -1;
+		}
+#endif
         ad_flush(ad);
     } else {
         /* Read the adouble header in and parse it.*/
@@ -1456,14 +1631,29 @@ int ad_open( const char *path, int adflags, int oflags, int mode, struct adouble
             errno = err;
             return -1;
         }
+#ifdef MY_ABC_HERE
+		if (0 > ad_syno_hfsxattr_read(ad)) {
+            int err = errno;
+
+            ad_close(ad, adflags);
+            errno = err;
+            return -1;
+		}
+#endif
     }
 
     /* ****************************************** */
     /* open the resource fork if SFM */
 sfm:
+#ifdef MY_ABC_HERE
+    if (!AD_IS_SYNCXATTR(ad) && ad->ad_flags != AD_VERSION1_SFM) {
+        return 0;
+    }
+#else
     if (ad->ad_flags != AD_VERSION1_SFM) {
         return 0;
     }
+#endif
 
     if ((adflags & ADFLAGS_DIR)) {
         /* no resource fork for directories / volumes XXX it's false! */
@@ -1484,6 +1674,19 @@ sfm:
         return 0;
     }
 
+#ifdef MY_ABC_HERE
+	if (AD_IS_SYNCXATTR(ad)) {
+		snprintf(ad_rfork_path, sizeof(ad_rfork_path), "%s/rsrc", ad->ad_df_path);
+		ad_p = ad_rfork_path;
+		oflags &= ~O_CREAT; // since rsrc always exists
+		if (!stat(ad->ad_df_path, &st) && !(st.st_mode & S_IXUSR)) {
+			uid = geteuid();
+			seteuid(0);
+			blChmod = 1;
+			chmod(ad->ad_df_path, st.st_mode | S_IXUSR);
+		}
+	} else
+#endif
     ad_p = ad->ad_ops->ad_path( path, ADFLAGS_RF );
 
     admode = mode;
@@ -1503,6 +1706,12 @@ sfm:
         }
     }
 
+#ifdef MY_ABC_HERE
+	if (blChmod) {
+		chmod(ad->ad_df_path, st.st_mode);
+		seteuid(uid);
+	}
+#endif
     if ( ad->ad_resource_fork.adf_fd < 0) {
         int err = errno;
 
@@ -1636,7 +1845,11 @@ static int new_rfork(const char *path, struct adouble *ad, int adflags)
     if (ad->ad_flags == AD_VERSION2)
         eid = entry_order2;
     else if (ad->ad_flags == AD_VERSION2_OSX)
-        eid = entry_order_osx;
+#ifdef MY_ABC_HERE
+		eid = entry_order2;
+#else
+		eid = entry_order_osx;
+#endif
     else  if (ad->ad_flags == AD_VERSION1_SFM) {
         ad->ad_magic = SFM_MAGIC;
         eid = entry_order_sfm;
@@ -1678,7 +1891,17 @@ static int new_rfork(const char *path, struct adouble *ad, int adflags)
     }
 
     /* put something sane in the date fields */
+#ifdef MY_ABC_HERE
+	time_t ctime = 0;
+	if (0 == synoCreateTimeGet(path, &ctime)) {
+	    ad_setdate(ad, AD_DATE_CREATE | AD_DATE_UNIX, ctime);
+	} else {
+		LOG(log_debug, logtype_afpd, "ad_openat: cant get the create time");
+	    ad_setdate(ad, AD_DATE_CREATE | AD_DATE_UNIX, st.st_mtime);
+	}
+#else
     ad_setdate(ad, AD_DATE_CREATE | AD_DATE_UNIX, st.st_mtime);
+#endif
     ad_setdate(ad, AD_DATE_MODIFY | AD_DATE_UNIX, st.st_mtime);
     ad_setdate(ad, AD_DATE_ACCESS | AD_DATE_UNIX, st.st_mtime);
     ad_setdate(ad, AD_DATE_BACKUP, AD_DATE_START);
@@ -1731,3 +1954,60 @@ exit:
 
     return ret;
 }
+
+#ifdef MY_ABC_HERE
+static int SYNOGetADVersionByFS(FSTYPE fsType)
+{
+	int  ret = -1;
+
+	switch (fsType) {
+	case FSTYPE_EXT3:
+	case FSTYPE_EXT4:
+	case FSTYPE_REISER:
+	case FSTYPE_HFSPLUS:
+		ret = AD_VERSION2;
+		break;
+	case FSTYPE_FAT:
+	case FSTYPE_NTFS:
+		ret = AD_VERSION2_OSX;
+		break;
+	default:
+		LOG(log_debug, logtype_afpd, "not support file system type: %d", fsType);
+		ret = -1;
+		break;
+	}
+
+	return ret;
+}
+
+int SYNOGetADVersionByPath(const char *szPathName)
+{
+	FSTYPE  fsType = SYNOGetFSType(szPathName, 1);
+
+	return SYNOGetADVersionByFS(fsType);
+}
+#endif
+
+#ifdef MY_ABC_HERE
+int synoCreateTimeGet(char* szPath, time_t* pTime)
+{
+	int ret = -1;
+	SYNOSTAT synostat;
+	BZERO_STRUCT(synostat);
+
+	if (NULL == szPath || NULL == pTime) {
+		LOG(log_error, logtype_afpd, "synoCreateTimeGet: wrong parameter szPath = %x, pTime = %x",
+			   	szPath, pTime);
+		goto End;
+	}
+	if (0 > SLIBCFileStat(szPath, SYNOST_CREATIME, &synostat)) {
+		LOG(log_error, logtype_afpd, "synoCreateTimeGet: synoerr=%x", SLIBCErrGet());
+		goto End;
+	}
+	*pTime = synostat.ext.creatTime.tv_sec;
+	ret = 0;
+End:
+	return ret;
+}
+#endif
+

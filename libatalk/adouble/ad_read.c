@@ -83,7 +83,11 @@ ssize_t ad_read( struct adouble *ad, const u_int32_t eid, off_t off, char *buf, 
             /* resource fork is not open ( cf etc/afp/fork.c) */
             return 0;
         }
+#ifdef MY_ABC_HERE
+        r_off = ad_getentryoff_hfs(ad, eid) + off;
+#else
         r_off = ad_getentryoff(ad, eid) + off;
+#endif
 
         if (( cc = adf_pread( &ad->ad_resource_fork, buf, buflen, r_off )) < 0 ) {
             return( -1 );
@@ -94,6 +98,9 @@ ssize_t ad_read( struct adouble *ad, const u_int32_t eid, off_t off, char *buf, 
          * we need to update ad_data.
          * FIXME : always false?
          */
+#ifdef MY_ABC_HERE
+		if (!AD_IS_SYNCXATTR(ad)) {
+#endif
         if (r_off < ad_getentryoff(ad, ADEID_RFORK)) {
             if ( ad->ad_resource_fork.adf_flags & O_RDWR ) {
                 memcpy(buf, ad->ad_data + r_off,
@@ -103,6 +110,9 @@ ssize_t ad_read( struct adouble *ad, const u_int32_t eid, off_t off, char *buf, 
                        MIN(sizeof( ad->ad_data ) - r_off, cc));
             }
         }
+#ifdef MY_ABC_HERE
+		}
+#endif
     }
 
     return( cc );

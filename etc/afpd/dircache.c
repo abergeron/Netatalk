@@ -307,7 +307,9 @@ struct dir *dircache_search_by_did(const struct vol *vol, cnid_t cnid)
     hnode_t *hn;
 
     AFP_ASSERT(vol);
+#ifndef MY_ABC_HERE
     AFP_ASSERT(ntohl(cnid) >= CNID_START);
+#endif
 
     dircache_stat.lookups++;
     key.d_vid = vol->v_vid;

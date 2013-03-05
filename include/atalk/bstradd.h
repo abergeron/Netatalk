@@ -26,7 +26,11 @@
 
 #include <atalk/bstrlib.h>
 
+#ifdef MY_ABC_HERE
+#define cfrombstr(b) ((b) ? (char *)((b)->data) : "")
+#else
 #define cfrombstr(b) ((char *)((b)->data))
+#endif
 
 /* strip slashes from end of a bstring */
 #define BSTRING_STRIP_SLASH(a)                      \

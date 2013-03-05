@@ -436,8 +436,10 @@ void syslog_setup(int loglevel, enum logtypes logtype, int display_options, int 
 
     log_config.inited = 1;
 
-    LOG(log_info, logtype_logger, "Set syslog logging to level: %s",
+#ifndef MY_ABC_HERE /* skip this since it would cause afp log before apply the new log level*/
+    LOG(log_note, logtype_logger, "Set syslog logging to level: %s",
         arr_loglevel_strings[loglevel]);
+#endif
 }
 
 void log_close(void)
@@ -454,14 +456,25 @@ void set_processname(const char *processname)
 /* Called by the LOG macro for syslog messages */
 static void make_syslog_entry(enum loglevels loglevel, enum logtypes logtype _U_, char *message)
 {
+#ifdef MY_ABC_HERE
+	char *basename = NULL, szLevel[4] = { 0 };
+#endif
     if ( !log_config.syslog_opened ) {
         openlog(log_config.processname,
                 log_config.syslog_display_options,
                 log_config.syslog_facility);
         log_config.syslog_opened = true;
     }
-
+#ifdef MY_ABC_HERE
+	basename = strrchr(log_src_filename, '/');
+	if (loglevel >= (num_loglevel_chars - 1))
+        snprintf(szLevel, sizeof(szLevel),  "D%d", loglevel - 1);
+    else
+        snprintf(szLevel, sizeof(szLevel), "%c", arr_loglevel_chars[loglevel]);
+    syslog(LOG_ERR, "[%s:%d-%s] %s", basename ? basename + 1 : log_src_filename, log_src_linenumber, szLevel, message);
+#else
     syslog(get_syslog_equivalent(loglevel), "%s", message);
+#endif
 }
 
 /* -------------------------------------------------------------------------
@@ -490,6 +503,10 @@ void make_log_entry(enum loglevels loglevel, enum logtypes logtype,
     if (!log_config.inited) {
       log_init();
     }
+#ifdef MY_ABC_HERE
+    log_src_filename = file;
+    log_src_linenumber = line;
+#endif
     
     if (type_configs[logtype].syslog) {
         if (type_configs[logtype].level >= loglevel) {
@@ -505,9 +522,10 @@ void make_log_entry(enum loglevels loglevel, enum logtypes logtype,
     }
 
     /* logging to a file */
-
+#ifndef MY_ABC_HERE
     log_src_filename = file;
     log_src_linenumber = line;
+#endif
 
     /* Check if requested logtype is setup */
     if (type_configs[logtype].set)
@@ -673,3 +691,27 @@ void unsetuplog(const char *logstr)
 
     free(str);
 }
+
+#ifdef MY_ABC_HERE
+int SYNOATLogSet(char *szLogType, char *szLogLevel, char *szLogID, char *szParam1, char *szParam2, char *szParam3, char *szParam4)
+{
+	char szCmd[1024];
+
+	if (!szLogType || !szLogLevel || !szLogID ||!szParam1 || !szParam2 || !szParam3 || !szParam4) {
+		return(1);
+	}
+
+	bzero(szCmd, sizeof(szCmd));
+	snprintf(szCmd, sizeof(szCmd),
+			"/usr/syno/bin/synologset1 \"%s\" \"%s\" \"%s\" \"%s\" \"%s\" \"%s\" \"%s\"",
+			szLogType,
+			szLogLevel,
+			szLogID,
+			szParam1,
+			szParam2,
+			szParam3,
+			szParam4);
+	system(szCmd);
+	return 0;
+}
+#endif /* MY_ABC_HERE */

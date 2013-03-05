@@ -51,6 +51,20 @@ static int argc = 0;
 static char **argv = NULL;
 #endif /* TRU64 */
 
+#ifdef MY_ABC_HERE
+#include <synosdk/file.h>
+#include <synosdk/conf.h>
+extern BOOL SYNOAFPCheckGeust(char *uamlist);
+extern void SYNOUpdateVolCodepage(int MacCharset, char *szMacCodepage);
+extern char *rgszCharsetName[NUM_CHARSETS];
+/** Record whether allowing guest login now */
+int gfGuestModuleEnable = -1;
+#endif
+#ifdef MY_ABC_HERE
+#include <synosdk/unicode.h>
+SYNO_CODEPAGE gslcpCodepage = SYNO_CP_MAC_850; /** current system codepage number */
+#endif /* MY_ABC_HERE */
+
 #define AFP_LISTENERS 32
 #define FDSET_SAFETY  5
 
@@ -130,10 +144,91 @@ static void fd_reset_listening_sockets(void)
         fdset_del_fd(&fdset, &polldata, &fdset_used, &fdset_size, disasociated_ipc_fd);
 }
 
+#ifdef MY_ABC_HERE
+/* Check & remap signal to SIGHUPALL / SIGHUPGUEST
+ * If we receive a signal SIGNAL, we only pass the signal to child when necessary 
+ * 1. Code page change: hup all children
+ * 2. Network setting change: Depend on the value of fTransport, hup asp/dsi children
+ * 3. From guest login to no guest login: hup all guest children
+ * 4. Error occured whiling checking the condiction: hup all children
+ */
+static int synoHUPCheck(int sig)
+{
+    int fTransport = 0;
+    char szBuf[MAX_PATH_LEN + 1] = {0};
+	char szLine[1024] = {0};
+	BOOL blGuestEnable = FALSE;
+	int ret = SIGHUPALL;
+
+#	ifdef DEBUG
+	LOG(log_debug, logtype_afpd, "==== got signal [%d] ", sig);
+#	endif
+	if (sig != SIGHUP) {
+		return sig;
+	}
+
+	/* Get the setting in /usr/syno/etc/afpd.conf */
+	if (0 > SLIBCFileGetLine(SZF_AFPD_CONF_PATH, "-uamlist", szLine, sizeof(szLine), 0)) {
+		LOG(log_error, logtype_afpd, "can not get config line in %s", SZF_AFPD_CONF_PATH);
+		goto END;
+	}
+
+	blGuestEnable = SYNOAFPCheckGeust(configs->obj.options.uamlist);
+	if (blGuestEnable != gfGuestModuleEnable) {
+		gfGuestModuleEnable = blGuestEnable;
+		LOG(log_info, logtype_afpd, "Guest module enabled=[%d]", blGuestEnable);
+		ret = SIGHUPGUEST;
+		goto END;
+	}
+
+	/* Get the current codepage */
+	if (0 >= SLIBCFileGetKeyValue(SZF_SYNO_INFO, "codepage", szBuf, sizeof(szBuf), 0)) {
+		LOG(log_error, logtype_afpd, "SLIBCFileGetKeyValue() fail key = %s. " SLIBERR_FMT, "codepage", SLIBERR_ARGS);
+		goto END;
+	}
+	/* Check whether codepage change */
+	if (strcmp(default_options.maccodepage, szBuf)) {
+		LOG(log_info, logtype_afpd, "change codepage from %d to %d", default_options.maccodepage, szBuf);
+		
+		if ((charset_t)-1 != ( default_options.maccharset = add_charset(szBuf)) ) {
+			default_options.maccodepage = rgszCharsetName[default_options.maccharset];
+			//TODO: Need update all volume ?? or Let afp handle this
+			SYNOUpdateVolCodepage( default_options.maccharset, default_options.maccodepage );
+		} else {
+			default_options.maccharset = CH_SYNO_ENU;
+			default_options.maccodepage = rgszCharsetName[CH_SYNO_ENU];
+			LOG(log_error, logtype_afpd, "add_charset() fail, codepage = %s.", szBuf);
+		}
+		goto END;
+	}
+	
+	/* Get and check the network setting */
+	if (strstr(szLine, " -tcp"))
+		fTransport |= AFPTRANS_TCP;
+
+	if (strstr(szLine, " -ddp"))
+		fTransport |= AFPTRANS_DDP;
+
+	if (configs->obj.options.transports ^ fTransport) {
+		LOG(log_info, logtype_afpd, "afpd network configuration changed");
+		goto END;
+	}
+	ret = SIGHUP;
+END:
+#	ifdef DEBUG
+	LOG(log_debug, logtype_afpd, "remap signal [%d] -> [%d]", sig, ret);
+#	endif
+	return ret;
+}
+#endif /* MY_ABC_HERE */
+
 /* ------------------ */
 static void afp_goaway(int sig)
 {
         AFPConfig *config;
+#ifdef MY_ABC_HERE
+	sig = synoHUPCheck(sig);
+#endif
 
 #ifndef NO_DDP
     asp_kill(sig);
@@ -163,6 +258,9 @@ static void afp_goaway(int sig)
             if (config->server_cleanup)
                 config->server_cleanup(config);
         server_unlock(default_options.pidfile);
+#ifdef MY_ABC_HERE
+		SYNOATLogSet("sys", "info", "0x11800211", "", "", "", "");
+#endif /* MY_ABC_HERE */
         exit(0);
         break;
 
@@ -176,6 +274,39 @@ static void afp_goaway(int sig)
         break;
 
     case SIGHUP :
+#ifdef MY_ABC_HERE
+        if (server_children)
+            server_child_kill(server_children, CHILD_DSIFORK, sig);
+		/* do not handle HUP, because it is not necessary to re-read config every time */
+#ifdef DEBUG
+        LOG(log_info, logtype_afpd, "Parent received a HUP signal, need not to re-read config");
+#endif
+        break;
+
+    case SIGHUPGUEST:
+        if (server_children)
+            server_child_kill(server_children, CHILD_DSIFORK, sig);
+        /* Reload the authentication module */
+        auth_unload();
+        
+        if (!configs) {
+            LOG(log_error, logtype_afpd, "No config!!!");
+            break;
+        }
+
+        auth_load(configs->obj.options.uampath, configs->obj.options.uamlist);
+        
+        if (configs->obj.proto == AFPPROTO_DSI) {
+            status_init(configs->next, configs, &(configs->obj.options));
+        } else {
+            status_init(configs, configs->next, &(configs->obj.options));
+        }
+        break;
+
+    case SIGHUPALL:
+        if (server_children)
+            server_child_kill(server_children, CHILD_DSIFORK, sig);
+#endif /* MY_ABC_HERE */
         /* w/ a configuration file, we can force a re-read if we want */
         reloadconfig = 1;
         break;
@@ -266,7 +397,11 @@ int main(int ac, char **av)
     if (check_lockfile("afpd", default_options.pidfile) != 0)
         exit(EXITERR_SYS);
 
+#ifdef MY_ABC_HERE
+    if (!(default_options.flags & OPTION_DEBUG) && (daemonize(0, (default_options.flags & OPTION_CUSTOMLOG) ? 1 : 0) != 0))
+#else
     if (!(default_options.flags & OPTION_DEBUG) && (daemonize(0, 0) != 0))
+#endif
         exit(EXITERR_SYS);
 
     if (create_lockfile("afpd", default_options.pidfile) != 0)
@@ -277,11 +412,22 @@ int main(int ac, char **av)
 
     /* Default log setup: log to syslog */
     set_processname("afpd");
+#ifndef MY_ABC_HERE
     setuplog("default log_note");
+#endif
 
     /* Save the user's current umask */
     default_options.save_mask = umask( default_options.umask );
 
+#ifdef MY_ABC_HERE
+    if (SLIBCCodePageGet(SYNO_CODEPAGE_MAC, &gslcpCodepage) == -1) {
+	    LOG(log_error, logtype_afpd, "SLIBCCodePageGet() fail, codepage = %d " SLIBERR_FMT, gslcpCodepage, SLIBERR_ARGS);
+    }
+#endif
+
+#ifdef MY_ABC_HERE
+		SYNOATLogSet("sys", "info", "0x11800210", "", "", "", "");
+#endif /* MY_ABC_HERE */
     atexit(afp_exit);
 
     /* install child handler for asp and dsi. we do this before afp_goaway
@@ -305,6 +451,13 @@ int main(int ac, char **av)
     }
 #endif
     
+	sv.sa_handler = SIG_IGN;
+	sigemptyset( &sv.sa_mask );
+	if (sigaction(SIGPIPE, &sv, NULL ) < 0 ) {
+        LOG(log_error, logtype_afpd, "main: sigaction: %s", strerror(errno) );
+        exit(EXITERR_SYS);
+	}
+
     sv.sa_handler = afp_goaway; /* handler for all sigs */
 
     sigemptyset( &sv.sa_mask );
@@ -449,6 +602,14 @@ int main(int ac, char **av)
                 LOG(log_error, logtype_afpd, "config re-read: no servers configured");
                 exit(EXITERR_CONF);
             }
+#ifdef MY_ABC_HERE
+			if (SLIBCUnicodeReInitLocale() == -1) {
+				LOG(log_error, logtype_afpd, "SLIBCUnicodeReInitLocale() fail");
+			}
+			if (SLIBCCodePageGet(SYNO_CODEPAGE_MAC, &gslcpCodepage) == -1) {
+				LOG(log_error, logtype_afpd, "SLIBCCodePageGet() fail, codepage = %d", gslcpCodepage);
+			}
+#endif /* MY_ABC_HERE */
 
             fd_set_listening_sockets();
 

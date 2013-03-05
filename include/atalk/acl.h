@@ -51,7 +51,11 @@ extern int remove_acl_vfs(const char *name);
 
 #else /* HAVE_ACLS=no */
 
+#ifdef MY_ABC_HERE
+#define chmod_acl(a,b) SYNOACLChmod(a, -1, b)
+#else
 #define chmod_acl chmod
+#endif
 
 #endif /* HAVE_ACLS */
 

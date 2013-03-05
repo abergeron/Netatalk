@@ -47,12 +47,15 @@ struct dsi_block {
   u_int8_t dsi_flags;       /* packet type: request or reply */
   u_int8_t dsi_command;     /* command */
   u_int16_t dsi_requestID;  /* request ID */
-  u_int32_t dsi_code;       /* error code or data offset */
+  union {
+    uint32_t dsi_code;   /* error code */
+    uint32_t dsi_doff;   /* data offset */
+  };
   u_int32_t dsi_len;        /* total data length */
   u_int32_t dsi_reserved;   /* reserved field */
 };
 
-#define DSI_CMDSIZ        8192 
+#define DSI_CMDSIZ		  8192
 #define DSI_DATASIZ       8192
 
 /* child and parent processes might interpret a couple of these
@@ -72,7 +75,8 @@ typedef struct DSI {
   u_int32_t attn_quantum, datasize, server_quantum;
   u_int16_t serverID, clientID;
   char      *status;
-  u_int8_t  commands[DSI_CMDSIZ], data[DSI_DATASIZ];
+  uint8_t  *commands; /* DSI recieve buffer */
+  uint8_t  data[DSI_DATASIZ];    /* DSI reply buffer */
   size_t statuslen;
   size_t datalen, cmdlen;
   off_t  read_count, write_count;
@@ -186,9 +190,13 @@ extern void dsi_close (DSI *);
 /* low-level stream commands -- in dsi_stream.c */
 extern ssize_t dsi_stream_write (DSI *, void *, const size_t, const int mode);
 extern size_t dsi_stream_read (DSI *, void *, const size_t);
+#ifdef MY_ABC_HERE
+extern size_t syno_dsi_stream_read(DSI *, void *, const size_t);
+#endif
 extern int dsi_stream_send (DSI *, void *, size_t);
 extern int dsi_stream_receive (DSI *);
 extern int dsi_disconnect(DSI *dsi);
+extern void dsi_free(DSI *dsi);
 
 #ifdef WITH_SENDFILE
 extern ssize_t dsi_stream_read_file(DSI *, int, off_t off, const size_t len);
@@ -197,6 +205,9 @@ extern ssize_t dsi_stream_read_file(DSI *, int, off_t off, const size_t len);
 /* client writes -- dsi_write.c */
 extern size_t dsi_writeinit (DSI *, void *, const size_t);
 extern size_t dsi_write (DSI *, void *, const size_t);
+#ifdef MY_ABC_HERE
+extern size_t syno_dsi_write(DSI *, void *, const size_t);
+#endif
 extern void   dsi_writeflush (DSI *);
 #define dsi_wrtreply(a,b)  dsi_cmdreply(a,b)
 

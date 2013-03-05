@@ -18,6 +18,11 @@
 #include "config.h"
 #endif /* HAVE_CONFIG_H */
 
+#ifdef MY_ABC_HERE
+// disable nfsquota since we don't support nfs remote share
+#define NO_QUOTA_SUPPORT 1
+#endif
+
 #if !defined(NO_QUOTA_SUPPORT) && !defined(HAVE_LIBQUOTA)
 #include <stdio.h>
 /* STDC check */

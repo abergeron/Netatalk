@@ -118,6 +118,9 @@ extern int setfilparams (struct vol *, struct path *, u_int16_t, char *);
 extern int renamefile   (const struct vol *, int, char *, char *, char *, struct adouble *);
 extern int copyfile     (const struct vol *, const struct vol *, int, char *, char *, char *, struct adouble *);
 extern int deletefile   (const struct vol *, int, char *, int);
+#ifdef MY_ABC_HERE
+extern int syno_deletefile   (const struct vol *, int, char *, int, struct dir *);
+#endif
 
 extern int getmetadata  (struct vol *vol, u_int16_t bitmap, struct path *path, 
                          struct dir *dir, char *buf, size_t *buflen, struct adouble *adp);

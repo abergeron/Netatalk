@@ -35,7 +35,11 @@
 #include <atalk/globals.h>
 
 /* Number of bits for p which we generate. Everybode out there uses 512, so we beet them */
+#if defined(MY_ABC_HERE) && (defined(SYNO_MARVELL_88F6281) || defined(SYNO_MARVELL_88F6180))
+#define PRIMEBITS 512
+#else
 #define PRIMEBITS 1024
+#endif
 
 /* hash a number to a 16-bit quantity */
 #define dhxhash(a) ((((unsigned long) (a) >> 8) ^   \
@@ -623,12 +627,24 @@ static int logincont2(void *obj_in, struct passwd **uam_pwd,
     ibuf += 16;
 
     /* ---- Start authentication with PAM --- */
-
     /* The password is in legacy Mac encoding, convert it to host encoding */
+#ifdef MY_ABC_HERE
+    if (convert_string_allocate(CH_MAC_ROMAN, default_options.unixcharset, ibuf, -1, &utfpass) == (size_t)-1) {
+        LOG(log_error, logtype_uams, "Conversion from MAC_ROMAN to UTF8 failed.  PAM_password: %s", ibuf);
+        int j=0;
+        while (*(ibuf+j) != '\0') {
+            LOG(log_error, logtype_uams, "code:%x ", *(ibuf+j));
+            j++;
+        }
+        ret = AFPERR_NOTAUTH;
+        goto error_ctx;
+    }
+#else
     if (convert_string_allocate(CH_MAC, CH_UNIX, ibuf, -1, &utfpass) == (size_t)-1) {
         LOG(log_error, logtype_uams, "DHX2: conversion error");
         goto error_ctx;
     }
+#endif
     PAM_password = utfpass;
 
 #ifdef DEBUG
@@ -647,8 +663,11 @@ static int logincont2(void *obj_in, struct passwd **uam_pwd,
     /* solaris craps out if PAM_TTY and PAM_RHOST aren't set. */
     pam_set_item(pamh, PAM_TTY, "afpd");
     pam_set_item(pamh, PAM_RHOST, hostname);
-
+#ifdef MY_ABC_HERE
+    PAM_error = pam_authenticate(pamh, PAM_SILENT);
+#else
     PAM_error = pam_authenticate(pamh, 0);
+#endif
     if (PAM_error != PAM_SUCCESS) {
         if (PAM_error == PAM_MAXTRIES)
             ret = AFPERR_PWDEXPR;
@@ -661,7 +680,11 @@ static int logincont2(void *obj_in, struct passwd **uam_pwd,
         }
     }
 
+#ifdef MY_ABC_HERE
+    PAM_error = pam_acct_mgmt(pamh, PAM_SILENT);
+#else
     PAM_error = pam_acct_mgmt(pamh, 0);
+#endif
     if (PAM_error != PAM_SUCCESS ) {
         LOG(log_info, logtype_uams, "DHX2: PAM_Error: %s",
             pam_strerror(pamh, PAM_error));
@@ -849,7 +872,11 @@ static int changepw_3(void *obj _U_,
     pam_set_item(lpamh, PAM_RHOST, hostname);
     uid = geteuid();
     seteuid(0);
+#ifdef MY_ABC_HERE
+    PAM_error = pam_authenticate(lpamh, PAM_SILENT);
+#else
     PAM_error = pam_authenticate(lpamh,0);
+#endif
     if (PAM_error != PAM_SUCCESS) {
         LOG(log_info, logtype_uams, "DHX2 Chgpwd: error authenticating with PAM");
         seteuid(uid);

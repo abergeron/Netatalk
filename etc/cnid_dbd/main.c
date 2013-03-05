@@ -208,10 +208,17 @@ static int loop(struct db_param *dbp)
           "flush_interval" seconds passed ?
         */
         if (now >= time_next_flush) {
+#ifdef MY_ABC_HERE
+			// no db changed action => don't need to sync DB
+			if (count > 0) {
+#endif
             LOG(log_info, logtype_cnid, "Checkpointing BerkeleyDB for volume '%s'", dbp->dir);
             if (dbif_txn_checkpoint(dbd, 0, 0, 0) < 0)
                 return -1;
             count = 0;
+#ifdef MY_ABC_HERE
+			}
+#endif
             time_next_flush = now + dbp->flush_interval;
 
             strftime(timebuf, 63, "%b %d %H:%M:%S.",localtime(&time_next_flush));

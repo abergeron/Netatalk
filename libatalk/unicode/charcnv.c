@@ -66,7 +66,39 @@
  */
 
 
+#ifdef MY_ABC_HERE
+char *rgszCharsetName[NUM_CHARSETS] = {
+"UCS-2",					// CH_UCS2
+"UTF8",						// CH_UTF8
+NULL,						// CH_MAC
+NULL,						// CH_UNIX
+"UTF8-MAC",					// CH_UTF8_MAC
+"MAC_ROMAN",				// CH_MAC_ROMAN
+"enu",						// CH_SYNO_ENU
+"fre",						// CH_SYNO_FRE,
+"ger",						// CH_SYNO_GER,
+"ita",						// CH_SYNO_ITA,
+"spn",						// CH_SYNO_SPN,
+"cht",						// CH_SYNO_CHT,
+"chs",						// CH_SYNO_CHS,
+"jpn",						// CH_SYNO_JPN,
+"krn",						// CH_SYNO_KRN,
+"ptb",						// CH_SYNO_PTB,
+"rus",						// CH_SYNO_RUS,
+"dan",						// CH_SYNO_DAN,
+"nor",						// CH_SYNO_NOR,
+"sve",						// CH_SYNO_SVE,
+"nld",						// CH_SYNO_NLD,
+"plk",						// CH_SYNO_PLK,
+"ptg",						// CH_SYNO_PTG,
+"hun",						// CH_SYNO_HUN,
+"trk",						// CH_SYNO_TRK,
+"ara",                      // CH_SYNO_ARA,
+};
+#define MAX_CHARSETS NUM_CHARSETS
+#else
 #define MAX_CHARSETS 20
+#endif
 
 #define CHECK_FLAGS(a,b) (((a)!=NULL) ? (*(a) & (b)) : 0 )
 
@@ -116,9 +148,15 @@ static const char *charset_name(charset_t ch)
         first = 0;
     }
 
+#ifdef MY_ABC_HERE
+	if ( (ch != CH_UNIX) && ( ch != CH_MAC) && ( ch < NUM_CHARSETS )) {
+		ret = rgszCharsetName[ch];
+	}
+#else
     if (ch == CH_UCS2) ret = "UCS-2";
     else if (ch == CH_UTF8) ret = "UTF8";
     else if (ch == CH_UTF8_MAC) ret = "UTF8-MAC";
+#endif
     else if (ch == CH_UNIX) {
         if (unixname[0] == '\0') {
             ret = read_charsets_from_env(CH_UNIX);

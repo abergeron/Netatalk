@@ -44,6 +44,36 @@
 #include "afp_zeroconf.h"
 
 #define LINESIZE 1024  
+#ifdef MY_ABC_HERE
+#include <synosdk/file.h>
+#include <synosdk/conf.h>
+
+extern int gfGuestModuleEnable;
+// check empty password of guest and adjust the uamlist.
+// Since when enable guest uam module, AFP would ignore password check.
+// we would only enable guest module with empty guest password.
+BOOL SYNOAFPCheckGeust(char *uamlist)
+{
+	PSYNOUSER pUser = NULL;
+	char *p = NULL;
+	BOOL blEnableGuest = FALSE;
+
+	if (SLIBCFileCheckKeyValue(SZF_CUSTOM_DEF, "guestsupport", SZV_YES, TRUE)) {
+		if (0 > SYNOUserGet(SZ_GUEST, &pUser)) {
+			LOG(log_error, logtype_afpd, "Can not lookup [%s] by SYNOUserGet(). SynoErr=" SLIBERR_FMT, SZ_GUEST, SLIBERR_ARGS);
+		} else if (!strcmp(crypt("", pUser->szPasswd), pUser->szPasswd)) {
+			blEnableGuest = TRUE;
+		}
+		SYNOUserFree(pUser);
+	}
+
+	p = strstr(uamlist, blEnableGuest ? SZ_AFP_NGUEST_MOD : SZ_AFP_GUEST_MOD);
+	if (p) {
+		p[4] = blEnableGuest ? '_' : 'N';
+	}
+	return blEnableGuest;
+}
+#endif /* MY_ABC_HERE*/
 
 /* get rid of unneeded configurations. i use reference counts to deal
  * w/ multiple configs sharing the same afp_options. oh, to dream of
@@ -74,7 +104,7 @@ void configfree(AFPConfig *configs, const AFPConfig *config)
             break;
 #endif /* no afp/asp */
         case AFPPROTO_DSI:
-            close(p->fd);
+            dsi_free((DSI*)p->obj.handle);
             free(p->obj.handle);
             break;
         }
@@ -506,6 +536,12 @@ static AFPConfig *AFPConfigInit(struct afp_options *options,
        things with the same names will cause complaints. by not loading
        in any uams with proxies, we prevent ddp connections from succeeding.
     */
+#ifdef MY_ABC_HERE
+	if (-1 == gfGuestModuleEnable) {
+		/* Record whether allowing guest login now */
+		gfGuestModuleEnable = SYNOAFPCheckGeust(options->uamlist) ? 1 : 0;
+	}
+#endif /* MY_ABC_HERE*/
     auth_load(options->uampath, options->uamlist);
 
     /* this should be able to accept multiple dsi transports. i think
@@ -584,7 +620,13 @@ AFPConfig *configinit(struct afp_options *cmdline)
         first = AFPConfigInit(cmdline, cmdline);
 
     /* Now register with zeroconf, we also need the volumes for that */
-    if (first && !(first->obj.options.flags & OPTION_NOZEROCONF)) {
+#ifdef MY_ABC_HERE
+	// Bug# 26642: check first == NULL since AFPConfigInit failed.
+    if (first && !(first->obj.options.flags & OPTION_NOZEROCONF)) 
+#else
+    if (! (first->obj.options.flags & OPTION_NOZEROCONF)) 
+#endif
+	{
         load_volumes(&first->obj);
         zeroconf_register(first);
     }

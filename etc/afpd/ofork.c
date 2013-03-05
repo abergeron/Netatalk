@@ -27,6 +27,9 @@
 #include "volume.h"
 #include "directory.h"
 #include "fork.h"
+#ifdef MY_ABC_HERE
+#include <synosdk/index.h>
+#endif
 
 /* we need to have a hashed list of oforks (by dev inode) */
 #define OFORK_HASHSIZE  64
@@ -225,6 +228,9 @@ of_alloc(struct vol *vol,
     of->of_ad = ad;
     of->of_vol = vol;
     of->of_did = dir->d_did;
+#ifdef MY_ABC_HERE
+    of->of_fullpath = NULL;
+#endif
 
     *ofrefnum = refnum;
     of->of_refnum = refnum;
@@ -401,6 +407,12 @@ void of_dealloc( struct ofork *of)
     } else {/* someone's still using it. just free this user's locks */
         ad_unlock(of->of_ad, of->of_refnum);
     }
+#ifdef MY_ABC_HERE
+	if (of->of_fullpath) {
+		free(of->of_fullpath);
+		of->of_fullpath = NULL;
+	}
+#endif
 
     free( of );
 }
@@ -433,6 +445,23 @@ int of_closefork(struct ofork *ofork)
         }
     }
 
+#ifdef MY_ABC_HERE
+    if ((ofork->of_flags & AFPFORK_DATA) && (ofork->of_flags & AFPFORK_ACCWR)) {
+		if (ofork->of_fullpath) {
+			struct stat stData;
+			bzero(&stData, sizeof(struct stat));
+			if ((ofork->of_vol->v_sharestatus & SHARE_STATUS_INDEXED) &&
+				0 == fstat(ad_data_fileno(ofork->of_ad), &stData) && 0 < stData.st_size) {
+				SLIBSynoIndexAdd(ofork->of_fullpath, SLIB_INDEX_ADD);
+			}
+			if (ofork->of_vol->v_sharestatus & SHARE_STATUS_FILEINDEXED) {
+				SLIBSynoFileIndexAdd(ofork->of_fullpath, NULL, SLIB_FILE_INDEX_ADD);
+			}
+		} else {
+			LOG(log_error, logtype_afpd, "of_fullpath can't be NULL");
+		}
+	}
+#endif
     /* Somone has used write_fork, we assume file was changed, register it to file change event api */
     if (ofork->of_flags & AFPFORK_MODIFIED) {
         fce_register_file_modification(ofork);

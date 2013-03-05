@@ -65,6 +65,18 @@ char *strchr (), *strrchr ();
 #include <signal.h>
 #endif /* TRU64 */
 
+#ifdef MY_ABC_HERE
+#include <synosdk/user.h>
+#include <synosdk/wins.h>
+#include <synosdk/share.h>
+#include <synosdk/file.h>
+#include <synosdk/unicode.h>
+#include <synosdk/ldap.h>
+#endif
+#ifdef MY_ABC_HERE
+extern SYNO_CODEPAGE gslcpCodepage;
+#endif
+
 /* --- server uam functions -- */
 
 /* uam_load. uams must have a uam_setup function. */
@@ -89,9 +101,13 @@ struct uam_mod *uam_load(const char *path, const char *name)
         *p = '\0';
 
     if ((mod->uam_fcn = mod_symbol(module, buf)) == NULL) {
+#ifdef MY_ABC_HERE
+        LOG(log_error, logtype_afpd, "uam_load(%s): mod_symbol error for symbol %s. %s", name, buf, dlerror());
+#else
         LOG(log_error, logtype_afpd, "uam_load(%s): mod_symbol error for symbol %s",
             name,
             buf);
+#endif /* MY_ABC_HERE */
         goto uam_load_err;
     }
 
@@ -218,6 +234,112 @@ void uam_unregister(const int type, const char *name)
 */
 
 struct passwd *uam_getname(void *private, char *name, const int len)
+#ifdef MY_ABC_HERE
+{
+    struct passwd *pwent = NULL;
+	char	szCmd[128+96] = { 0 };
+	char   	strUsernameTmp[SYNO_USERNAME_UTF8_MAX + 1] = { 0 };
+	char   	*strSave = NULL,*szToken = NULL,*strParse = NULL;
+	char 	szRealm[1024] = { 0 };
+	char 	szWorkgroup[128] = { 0 };
+	int		i = 0;
+	FILE	*pp = NULL;
+	PSYNOUSER pUser = NULL;
+
+	//if domain user, change realm to workgroup name for match
+	// workgroup: SIG2K8, realm: SIG2K8.SYNO.COM
+	if (NULL != strchr(name,'\\')) {
+		snprintf(strUsernameTmp,sizeof(strUsernameTmp),"%s",name);
+
+		for (i=0,strParse = strUsernameTmp; i<2; i++,strParse = NULL) {
+			if(NULL == (szToken = strtok_r(strParse,"\\",&strSave))) {
+				break;
+			}
+
+			//check domain
+			if(0 == i) {
+				//get workgroup name
+				bzero(szWorkgroup, sizeof(szWorkgroup));
+				if (0 != SYNOWorkgroupGet(szWorkgroup, sizeof(szWorkgroup))) {
+					break;
+				}
+
+				//get realm
+				bzero(szRealm, sizeof(szRealm));
+				if (0 >= SLIBCFileGetKeyValue(SZF_SMBCONF, "realm", szRealm, sizeof(szRealm), 0)) {
+					break;
+				}
+
+				if(0 < strlen(szRealm) && 0 < strlen(szWorkgroup) && 0 == strcmp(szRealm,"*")) {
+					snprintf(szCmd,sizeof(szCmd),"/usr/syno/bin/wbinfo -D %s | /bin/grep Alt_Name | /usr/bin/awk -F': ' '{ printf($2); }'",szWorkgroup);
+					pp=popen(szCmd,"r");
+					if (!pp) {
+						break;
+					}
+					bzero(szRealm, sizeof(szRealm));
+					if(!fgets(szRealm,sizeof(szRealm),pp)) {
+						pclose(pp);
+						pp = NULL;
+						break;
+					}
+
+					pclose(pp);
+					pp = NULL;
+				}
+				//token doesn't match realm
+				if(0 != SLIBCUnicodeUTF8StrCaseCmp(szToken,szRealm)) {
+					break;
+				}
+
+			}
+			if(1 == i) {
+				snprintf(name,len,"%s\\%s",szWorkgroup,szToken);
+			}
+		}
+	}
+
+	/* === Compatible with OS 9 === */
+    /* Because clrtxt, randnum, dhxpasswd call this function after get address
+     * of obj->username. So I do the transformation here
+     * username in code page => username in unicode => obj->username == unicode
+     */
+    if (! (utf8_encoding()) ) {
+	    if (0 > SLIBCUnicodeStrCPToUTF8(gslcpCodepage, name, strUsernameTmp, sizeof(strUsernameTmp))) {
+		    LOG(log_error, logtype_afpd, "Fail to convert(%s): codepage = %d." SLIBERR_FMT, name, gslcpCodepage, SLIBERR_ARGS);
+	    } else {
+		    LOG(log_debug, logtype_afpd, "codepage = %d->utf8, user name:[%s]->[%s]", gslcpCodepage, name, strUsernameTmp);
+		    strncpy(name, strUsernameTmp, len-1);
+		    name[len-1] = '\0';
+	    }
+    }
+	/* === Compatible with OS 9 === */
+
+	// convert guest to lowercase
+    if (!strcasecmp(name, "guest")) strcpy(name, "guest");
+
+    /* Try to convert user name if is binded to LDAP or Window AD */
+    char *szName = name;
+    char szUserName[SYNO_DOMAIN_USERNAME_MAX] = {0};
+    if (0 < SYNOUserLoginNameConvert(name, szUserName, sizeof(szUserName))) {
+	    szName = szUserName;
+	    LOG(log_debug, logtype_afpd, "name converted: %s", szUserName);
+    }
+
+	/* Unify user information */
+	if (0 == SYNOUserGet(szName, &pUser)) {
+		/* There is possibility that length of szName is larger than len since
+		 * SYNO_DOMAIN_USERNAME_MAX > SYNO_USERNAME_UTF8_MAX
+		 */
+		snprintf(name, len, "%s", pUser->szName);
+        pwent = (struct passwd *)pUser;
+        LOG(log_debug, logtype_afpd, "Find a user name = [%s]", name);
+	} else {
+        LOG(log_error, logtype_afpd, "Can not find user = [%s] " SLIBERR_FMT, name, SLIBERR_ARGS);
+	}
+
+    return pwent;
+}
+#else
 {
     AFPObj *obj = private;
     struct passwd *pwent;
@@ -286,6 +408,7 @@ struct passwd *uam_getname(void *private, char *name, const int len)
     /* os x server doesn't keep anything useful if we do getpwent */
     return pwent ? getpwnam(name) : NULL;
 }
+#endif
 
 int uam_checkuser(const struct passwd *pwd)
 {

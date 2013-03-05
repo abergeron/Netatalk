@@ -308,13 +308,22 @@ int check_name(const struct vol *vol, char *name)
         return AFPERR_PARAM;
 
     if (!vol->vfs->vfs_validupath(vol, name)) {
+#ifndef MY_ABC_HERE
         LOG(log_error, logtype_afpd, "check_name: illegal name: '%s'", name);
+#endif
         return AFPERR_EXIST;
     }
 
+#ifdef MY_ABC_HERE
+	if (curdir->d_did != DIRDID_ROOT) {
+		return 0;
+	}
+#endif
     /* check for vetoed filenames */
+#ifndef MY_ABC_HERE
     if (veto_file(vol->v_veto, name))
         return AFPERR_EXIST;
+#endif
     return 0;
 }
 
@@ -624,7 +633,12 @@ int afp_delete(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf _U_, size
         if (s_path->st_valid && s_path->st_errno == ENOENT) {
             rc = AFPERR_NOOBJ;
         } else {
-            if ((rc = deletefile(vol, -1, upath, 1)) == AFP_OK) {
+#ifdef MY_ABC_HERE
+            if ((rc = syno_deletefile(vol, -1, upath, 1, dir)) == AFP_OK)
+#else
+            if ((rc = deletefile(vol, -1, upath, 1)) == AFP_OK)
+#endif
+            {
 				fce_register_delete_file( s_path );
                 if (vol->v_tm_used < s_path->st.st_size)
                     vol->v_tm_used = 0;

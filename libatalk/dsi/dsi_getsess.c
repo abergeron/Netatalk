@@ -37,6 +37,9 @@
 #include <atalk/dsi.h>
 #include <atalk/server_child.h>
 
+#ifdef MY_ABC_HERE
+#include <synosdk/proc.h>
+#endif
 /* hand off the command. return child connection to the main program */
 afp_child_t *dsi_getsession(DSI *dsi, server_child *serv_children, int tickleval)
 {
@@ -82,6 +85,19 @@ afp_child_t *dsi_getsession(DSI *dsi, server_child *serv_children, int tickleval
   
   /* child: check number of open connections. this is one off the
    * actual count. */
+#ifdef MY_ABC_HERE
+  /* 
+   *	Limit the maximum connections
+   */
+  if ((dsi->header.dsi_command == DSIFUNC_STAT) && 
+	  (SLIBCConnectionCountLogin(10, 0) < 0)) {
+    LOG(log_info, logtype_dsi, "Too many connections");
+    dsi->header.dsi_flags = DSIFL_REPLY;
+    dsi->header.dsi_code = DSIERR_NOSESS;
+    dsi_send(dsi);
+    exit(EXITERR_CLNT);
+  }
+#else
   if ((serv_children->count >= serv_children->nsessions) &&
       (dsi->header.dsi_command == DSIFUNC_OPEN)) {
     LOG(log_info, logtype_dsi, "dsi_getsess: too many connections");
@@ -90,6 +106,7 @@ afp_child_t *dsi_getsession(DSI *dsi, server_child *serv_children, int tickleval
     dsi_send(dsi);
     exit(EXITERR_CLNT);
   }
+#endif /* MY_ABC_HERE */
 
   /* get rid of some stuff */
   dsi->AFPobj->ipc_fd = ipc_fds[1];
@@ -124,7 +141,6 @@ afp_child_t *dsi_getsession(DSI *dsi, server_child *serv_children, int tickleval
     /* set up the tickle timer */
     dsi->timer.it_interval.tv_sec = dsi->timer.it_value.tv_sec = tickleval;
     dsi->timer.it_interval.tv_usec = dsi->timer.it_value.tv_usec = 0;
-    signal(SIGPIPE, SIG_IGN); /* we catch these ourselves */
     dsi_opensession(dsi);
     return NULL;
 

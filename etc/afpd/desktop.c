@@ -733,6 +733,11 @@ int afp_addcomment(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, char *rbuf _
         return( AFPERR_PARAM );
     }
 
+#ifdef MY_ABC_HERE
+    if (vol->v_flags & AFPVOL_RO) {
+        return AFPERR_ACCESS;
+	}
+#endif /* MY_ABC_HERE */
     memcpy( &did, ibuf, sizeof( did ));
     ibuf += sizeof( did );
     if (NULL == ( dir = dirlookup( vol, did )) ) {
@@ -880,6 +885,11 @@ int afp_rmvcomment(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, char *rbuf _
     if (NULL == ( vol = getvolbyvid( vid )) ) {
         return( AFPERR_PARAM );
     }
+#ifdef MY_ABC_HERE
+    if (vol->v_flags & AFPVOL_RO) {
+        return AFPERR_ACCESS;
+	}
+#endif /* MY_ABC_HERE */
 
     memcpy( &did, ibuf, sizeof( did ));
     ibuf += sizeof( did );

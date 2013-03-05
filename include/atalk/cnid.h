@@ -37,7 +37,11 @@
 
 #define CNID_INVALID   0
 /* first valid ID */
+#ifdef MY_ABC_HERE
+#define CNID_START		3500000
+#else
 #define CNID_START     17
+#endif
 
 #define CNID_ERR_PARAM 0x80000001
 #define CNID_ERR_PATH  0x80000002

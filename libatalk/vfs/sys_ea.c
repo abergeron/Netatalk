@@ -85,7 +85,7 @@ static char attr_name[256 +5] = "user.";
 
 static const char *prefix(const char *uname)
 {
-#if defined(HAVE_ATTROPEN)
+#if defined(HAVE_ATTROPEN) || defined(MY_ABC_HERE)
 	return uname;
 #else
 	strlcpy(attr_name +5, uname, 256);
@@ -417,9 +417,12 @@ ssize_t sys_llistxattr (const char *path, char *list, size_t size)
 {
 #if defined(HAVE_LLISTXATTR)
 	ssize_t ret;
-
 	ret = llistxattr(path, list, size);
+#ifdef MY_ABC_HERE
+	return ret;
+#else
 	return remove_user(ret, list, size);
+#endif
 #elif defined(HAVE_LISTXATTR) && defined(XATTR_ADD_OPT)
 	ssize_t ret;
 	int options = XATTR_NOFOLLOW;

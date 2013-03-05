@@ -16,6 +16,7 @@ libcharsets_la_SOURCES = \
 	mac_chinese_trad.c \
 	mac_chinese_simp.c \
 	mac_korean.c \
+	syno_mac_codepages.c \
 	generic_cjk.c \
 	generic_mb.c
 

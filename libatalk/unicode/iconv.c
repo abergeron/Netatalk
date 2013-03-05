@@ -89,13 +89,37 @@ static size_t ascii_push(void *,char **, size_t *, char **, size_t *);
 static size_t iconv_copy(void *,char **, size_t *, char **, size_t *);
 
 extern  struct charset_functions charset_mac_roman;
+#ifndef MY_ABC_HERE
 extern  struct charset_functions charset_mac_hebrew;
 extern  struct charset_functions charset_mac_centraleurope;
 extern  struct charset_functions charset_mac_cyrillic;
 extern  struct charset_functions charset_mac_greek;
 extern  struct charset_functions charset_mac_turkish;
+#endif /* !MY_ABC_HERE */
 extern  struct charset_functions charset_utf8;
 extern  struct charset_functions charset_utf8_mac;
+#ifdef MY_ABC_HERE
+extern  struct charset_functions charset_syno_mac_enu;
+extern  struct charset_functions charset_syno_mac_fre;
+extern  struct charset_functions charset_syno_mac_ger;
+extern  struct charset_functions charset_syno_mac_ita;
+extern  struct charset_functions charset_syno_mac_spn;
+extern  struct charset_functions charset_syno_mac_cht;
+extern  struct charset_functions charset_syno_mac_chs;
+extern  struct charset_functions charset_syno_mac_jpn;
+extern  struct charset_functions charset_syno_mac_krn;
+extern  struct charset_functions charset_syno_mac_ptb;
+extern  struct charset_functions charset_syno_mac_rus;
+extern  struct charset_functions charset_syno_mac_dan;
+extern  struct charset_functions charset_syno_mac_nor;
+extern  struct charset_functions charset_syno_mac_sve;
+extern  struct charset_functions charset_syno_mac_nld;
+extern  struct charset_functions charset_syno_mac_plk;
+extern  struct charset_functions charset_syno_mac_ptg;
+extern  struct charset_functions charset_syno_mac_hun;
+extern  struct charset_functions charset_syno_mac_trk;
+extern  struct charset_functions charset_syno_mac_ara;
+#endif /* MY_ABC_HERE */
 #ifdef HAVE_USABLE_ICONV
 extern  struct charset_functions charset_mac_japanese;
 extern  struct charset_functions charset_mac_chinese_trad;
@@ -171,11 +195,34 @@ static void lazy_initialize_iconv(void)
 		atalk_register_charset(&charset_utf8);
 		atalk_register_charset(&charset_utf8_mac);
 		atalk_register_charset(&charset_mac_roman);
+#ifdef MY_ABC_HERE
+		atalk_register_charset(&charset_syno_mac_enu);
+		atalk_register_charset(&charset_syno_mac_fre);
+		atalk_register_charset(&charset_syno_mac_ger);
+		atalk_register_charset(&charset_syno_mac_ita);
+		atalk_register_charset(&charset_syno_mac_spn);
+		atalk_register_charset(&charset_syno_mac_cht);
+		atalk_register_charset(&charset_syno_mac_chs);
+		atalk_register_charset(&charset_syno_mac_jpn);
+		atalk_register_charset(&charset_syno_mac_krn);
+		atalk_register_charset(&charset_syno_mac_ptb);
+		atalk_register_charset(&charset_syno_mac_rus);
+		atalk_register_charset(&charset_syno_mac_dan);
+		atalk_register_charset(&charset_syno_mac_nor);
+		atalk_register_charset(&charset_syno_mac_sve);
+		atalk_register_charset(&charset_syno_mac_nld);
+		atalk_register_charset(&charset_syno_mac_plk);
+		atalk_register_charset(&charset_syno_mac_ptg);
+		atalk_register_charset(&charset_syno_mac_hun);
+		atalk_register_charset(&charset_syno_mac_trk);
+		atalk_register_charset(&charset_syno_mac_ara);
+#else
 		atalk_register_charset(&charset_mac_hebrew);
 		atalk_register_charset(&charset_mac_greek);
 		atalk_register_charset(&charset_mac_turkish);
 		atalk_register_charset(&charset_mac_centraleurope);
 		atalk_register_charset(&charset_mac_cyrillic);
+#endif /* MY_ABC_HERE */
 #ifdef HAVE_USABLE_ICONV
 		atalk_register_charset(&charset_mac_japanese);
 		atalk_register_charset(&charset_mac_chinese_trad);

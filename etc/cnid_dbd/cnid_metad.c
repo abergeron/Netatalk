@@ -99,13 +99,27 @@
 static int srvfd;
 static int rqstfd;
 static volatile sig_atomic_t sigchild = 0;
+#ifdef MY_ABC_HERE
+static uint maxvol = 0;
+#include <synosdk/conf.h>
+#include <synosdk/file.h>
+#else
 static uint maxvol;
+#endif
 
 #define MAXSPAWN   3                   /* Max times respawned in.. */
 #define TESTTIME   10                  /* this much seconds apfd client tries to  *
                                         * to reconnect every 5 secondes, catch it */
+#ifdef MY_ABC_HERE
+static int MAXVOLS = 0;
+#else
 #define MAXVOLS    4096
+#endif
+#ifdef MY_ABC_HERE
+#define DEFAULTHOST  "127.0.0.1"
+#else
 #define DEFAULTHOST  "localhost"
+#endif
 #define DEFAULTPORT  "4700"
 
 struct server {
@@ -116,7 +130,11 @@ struct server {
     int control_fd;               /* file descriptor to child cnid_dbd process */
 };
 
+#ifdef MY_ABC_HERE
+static struct server *srv = NULL;
+#else
 static struct server srv[MAXVOLS];
+#endif
 
 /* Default logging config: log to syslog with level log_note */
 static char logconfig[MAXPATHLEN + 21 + 1] = "default log_note";
@@ -452,6 +470,9 @@ int main(int argc, char *argv[])
     char   *logfile  = NULL;
     sigset_t set;
     struct volinfo *volinfo;
+#ifdef MY_ABC_HERE
+	char szValue[8] = {'\0'};
+#endif
 
     set_processname("cnid_metad");
 
@@ -525,6 +546,26 @@ int main(int argc, char *argv[])
         LOG(log_error, logtype_cnid, "main: bad arguments");
         daemon_exit(1);
     }
+#ifdef MY_ABC_HERE
+	if (NULL == srv) {
+		if (-1 == SLIBCFileGetKeyValue(SZF_DEF_SYNOINFO, SZK_SHARES_MAX, szValue, sizeof(szValue), 0)) {
+			LOG(log_warning, logtype_cnid, "Fail to get key value of %s. Use default value=256." SLIBERR_FMT, SZK_SHARES_MAX, SLIBERR_ARGS);
+			MAXVOLS = 256;
+		} else {
+			MAXVOLS  = atoi(szValue);
+			if (0 >= MAXVOLS) {
+				LOG(log_warning, logtype_cnid, "Invalid maxshares [%d]. Use default value=256.", MAXVOLS);
+				// Since maxshares of USB Station2 = 0
+				MAXVOLS = 256;
+			}
+		}
+		srv = (struct server*)calloc((size_t)MAXVOLS, sizeof(struct server));
+		if (NULL == srv) {
+			LOG(log_error, logtype_cnid, "Fail to allocate memory (%d*%u). %m", MAXVOLS, sizeof(struct server));
+			exit(1);
+		}
+	}
+#endif
 
     (void)setlimits();
 

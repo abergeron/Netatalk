@@ -172,14 +172,22 @@ static int login(void *obj, char *username, int ulen,  struct passwd **uam_pwd,
     pam_set_item(pamh, PAM_TTY, "afpd");
     pam_set_item(pamh, PAM_RHOST, hostname);
     /* use PAM_DISALLOW_NULL_AUTHTOK if passwdminlen > 0 */
+#ifdef MY_ABC_HERE
+    PAM_error = pam_authenticate(pamh, PAM_SILENT);
+#else
     PAM_error = pam_authenticate(pamh,0);
+#endif
     if (PAM_error != PAM_SUCCESS) {
       if (PAM_error == PAM_MAXTRIES) 
 	err = AFPERR_PWDEXPR;
       goto login_err;
     }      
 
+#ifdef MY_ABC_HERE
+    PAM_error = pam_acct_mgmt(pamh, PAM_SILENT);
+#else
     PAM_error = pam_acct_mgmt(pamh, 0);
+#endif
     if (PAM_error != PAM_SUCCESS) {
       if (PAM_error == PAM_NEW_AUTHTOK_REQD) /* Password change required */
 	err = AFPERR_PWDEXPR;
@@ -315,7 +323,11 @@ static int pam_changepw(void *obj _U_, char *username,
     /* we might need to do this as root */
     uid = geteuid();
     seteuid(0);
+#ifdef MY_ABC_HERE
+    PAM_error = pam_authenticate(lpamh, PAM_SILENT);
+#else
     PAM_error = pam_authenticate(lpamh,0);
+#endif
     if (PAM_error != PAM_SUCCESS) {
       seteuid(uid);
       pam_end(lpamh, PAM_error);

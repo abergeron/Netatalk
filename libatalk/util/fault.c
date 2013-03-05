@@ -125,8 +125,12 @@ static void fault_report(int sig)
   
 	netatalk_panic("internal error");
 
+#ifdef MY_ABC_HERE
+	// avoiding calling abort() since it would cause problem in MARVELL
+#else
 	if (cont_fn) {
 		cont_fn(NULL);
+#endif
 #ifdef SIGSEGV
 		CatchSignal(SIGSEGV,SIGNAL_CAST SIG_DFL);
 #endif
@@ -134,7 +138,9 @@ static void fault_report(int sig)
 		CatchSignal(SIGBUS,SIGNAL_CAST SIG_DFL);
 #endif
 		return; /* this should cause a core dump */
+#ifndef MY_ABC_HERE
 	}
+#endif
     abort();
 }
 

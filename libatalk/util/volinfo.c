@@ -485,9 +485,21 @@ int savevolinfo(const struct vol *vol, const char *Cnid_srv, const char *Cnid_po
     const vol_opt_name_t *op = &vol_opt_names[0];
     const vol_opt_name_t *cf = &vol_opt_casefold[0];
 
+#ifdef MY_ABC_HERE
+	struct stat st;
+
+	if (NULL == vol->v_dbpath) {
+		LOG(log_error, logtype_afpd,"Fail to save .volinfo. NULL DB path detected.");
+		return -1;
+	}
+	bzero(&st, sizeof(struct stat));
+    strlcpy(item, vol->v_dbpath, sizeof(item));
+    strlcat(item, "/" VOLINFODIR "/", sizeof(item));
+#else
     strlcpy (item, vol->v_path, sizeof(item));
     strlcat (item, "/.AppleDesktop/", sizeof(item));
     strlcat (item, VOLINFOFILE, sizeof(item));
+#endif
 
     process_uid = geteuid();
     if (process_uid) {
@@ -496,8 +508,26 @@ int savevolinfo(const struct vol *vol, const char *Cnid_srv, const char *Cnid_po
         }
     }
 
+#ifdef MY_ABC_HERE
+	/* check and create .AppleDesktop */
+	if (0 != stat(item, &st) || !S_ISDIR(st.st_mode)) {
+		remove(item);
+		if (mkdir(item, 0777) && errno != EEXIST) {
+			LOG(log_error, logtype_afpd,"Fail to mkdir %s. %m", item);
+			return -1;
+		}
+	}
+
+	strlcat (item, VOLINFOFILE, sizeof(item));
+#endif
+
     if ((fd = open(item, O_RDWR | O_CREAT , 0666)) <0 ) {
+#ifdef MY_ABC_HERE
+		/* treat write fail as error because .volinfo file now would be used to pass dbpath to cnid_metad */
+        LOG(log_error, logtype_default,"Error opening %s: %s", item, strerror(errno));
+#else
         LOG(log_debug, logtype_default,"Error opening %s: %s", item, strerror(errno));
+#endif
         if (process_uid) {
             if (seteuid(process_uid) == -1) {
                 LOG(log_error, logtype_default, "can't seteuid back %s", strerror(errno));

@@ -36,6 +36,13 @@
 #include <atalk/util.h>
 #include <atalk/server_child.h>
 
+#ifdef MY_ABC_HERE
+#include <synosdk/file.h>
+#include <synosdk/conf.h>
+#include <synosdk/user.h>
+#include <synosdk/share.h>
+#endif
+
 #ifndef WEXITSTATUS
 #define WEXITSTATUS(stat_val) ((unsigned)(stat_val) >> 8)
 #endif /* ! WEXITSTATUS */
@@ -220,6 +227,162 @@ void server_child_free(server_child *children)
     free(children);
 }
 
+#ifdef MY_ABC_HERE
+/**
+   Check whether need to send a SIGHUP signale to each connected client
+   Cases that we should break the connection: 
+     0. The share access right changes
+     1. The share the user access is no longer valid. It may cause by volume 
+           crash, share rename, share delete, no home volume...
+     2. The user is not a valid user 
+     3. no guest login and the user is a guest 
+     4. no tcp connection now, CHILD_DSIFORK ASP_FORK is keep seperate 
+     5. code page changed 
+     6. Any fail in this function 
+  @param pid The process id to be found.
+  @param sighup The type of SIGHUP to be sent, ie, SIGHUP, SIGHUPGUEST or SIGHUPALL.
+  @return If postive int, need Hup; or -1 to indicate an error.
+ */
+#define SHARE_HUP	1
+#define USER_HUP	2
+static int SYNOATNeedHup(int pid, const int sighup)
+{
+	PSYNOUSER pUser = NULL;
+	PSYNOSHARE  pShare = NULL;
+	char szPid[64] = {0};
+	char *szLine = NULL;
+	int linesize = 1024;	// memory size of szLine
+	char *szUserName = NULL, *szInUse = NULL;
+	int ret = -1;
+
+	if (pid == 0) {
+		// if pid == 0, we'll send the signal to all processes
+		LOG(log_error, logtype_default, "should not send signal to proc 0");
+		return 0;
+	}
+	snprintf(szPid, sizeof(szPid), "%d", pid);
+
+Retry:
+	if ((szLine = (char *)malloc(linesize)) == NULL) {
+		LOG(log_error, logtype_default, "malloc fail");
+		goto End;
+	}
+	if (0 > SLIBCFileGetLine(SZF_ATLOG, szPid, szLine, linesize, OP_FIND_PREFIX)) {
+		if (SLIBCErrGet() == ERR_NOT_ENOUGH_MEMORY) {
+			LOG(log_error, logtype_default, "memory is not enough");
+			free(szLine);
+			linesize += 1024;
+			szLine = NULL;
+			goto Retry;
+		}
+		LOG(log_error, logtype_default, "fail to get line for pid %s", szPid);
+		goto End;
+	}
+
+	// parse the line
+	// Ex:30774   1306907185      test    192.168.32.25   new,
+	if (strtok(szLine, "\t") == NULL) {
+		LOG(log_error, logtype_default, "Format error in the current connection log for %s(1)", szPid);
+		goto End;
+	}
+	if (strtok(NULL, "\t") == NULL) {
+		LOG(log_error, logtype_default, "Format error in the current connection log for %s(2)", szPid);
+		goto End;
+	}
+	if ((szUserName = strtok(NULL, "\t")) == NULL) {
+		LOG(log_error, logtype_default, "Format error in the current connection log for %s(3)", szPid);
+		goto End;
+	}
+	if (strtok(NULL, "\t") == NULL) {
+		LOG(log_error, logtype_default, "Format error in the current connection log for %s(4)", szPid);
+		goto End;
+	}
+	szInUse = strtok(NULL, "\t\n");	// szInUse may be NULL!!
+
+	if (0 > SYNOUserGet(szUserName, &pUser)) {
+		// the user is no vaild now
+		// how to handle the nis and pdc user
+		if (SLIBCErrGet() == ERR_NO_SUCH_USER) {
+			LOG(log_error, logtype_default, "User [%s] now is invalid. => Close the connection." , szUserName);
+		} else {
+			LOG(log_error, logtype_default, "Can not lookup [%s] by SYNOUserGet(). SynoErr=" SLIBERR_FMT, szUserName, SLIBERR_ARGS);
+		}
+		ret = USER_HUP; // case 2
+		goto End;
+	} else if (SYNOUserIsExpired(pUser->expire)) {
+		LOG(log_error, logtype_default, "User [%s] now is disabled/expired. => Close the connection." , szUserName);
+		ret = USER_HUP;
+		goto End;
+	}
+
+	// check whether in-use share is valid
+	// and send sigusr1 to let child reload volumes
+	if (szInUse) {
+		char *szToken = NULL, *szPtr = NULL;
+
+		szPtr = szInUse;
+		for (szToken = strsep(&szPtr, ","); szToken && (szToken[0] != '\0'); szToken = strsep(&szPtr, ",")) {
+			if (!strcmp(SZK_RSECTION_HOME, szToken)) {
+				// home share is a special folder for our HOME SERVICE
+				const char *szkUseHomeType = NULL;
+				if (AUTH_LOCAL == pUser->authType) {
+					szkUseHomeType = SZK_USER_HOME;
+				} else if (AUTH_DOMAIN == pUser->authType) {
+					szkUseHomeType = SZK_DOMAIN_USER_HOME;
+				} else if (AUTH_LDAP == pUser->authType) {
+					szkUseHomeType = SZK_LDAP_USER_HOME;
+				} else {
+					LOG(log_error, logtype_default, "Unknow AUTH TYPE - %d of user %s. => Close the home connection.", pUser->authType, pUser->szName);
+					ret = SHARE_HUP;
+					goto End;
+				}
+				if (SLIBCFileCheckKeyValue(SZF_SYNO_INFO, szkUseHomeType, SZV_YES, FALSE)) {
+					continue;
+				}
+				LOG(log_error, logtype_default, "[%s] is not a valid share now. => Reload share config.", szToken);
+				ret = SHARE_HUP;
+				goto End;
+			}
+
+			if (0 > SYNOShareGet(szToken, &pShare)) {
+				if (SLIBCErrGet() == ERR_NO_SUCH_SHARE) {
+					LOG(log_error, logtype_default, "[%s] is not a valid share now. => Reload share config.", szToken);
+				} else {
+					LOG(log_error, logtype_default, "Fail to get share [%s]. => Reload share config." SLIBERR_FMT, szToken, SLIBERR_ARGS);
+				}
+				ret = SHARE_HUP; // case 1
+				goto End;
+			}
+
+			if (pShare->status & SHARE_STATUS_DISABLE) {
+				LOG(log_error, logtype_default, "[%s] is disabled now. => Reload share config.", szToken);
+				ret = SHARE_HUP; // case 1
+				goto End;
+			}
+		}
+	}
+
+	ret = SHARE_HUP; // case 0, the share access right may change
+
+End:
+	if (pUser) {
+		SYNOUserFree(pUser);
+	}
+
+	if (pShare) {
+		SYNOShareFree(pShare);
+	}
+
+	if (szLine != NULL) {
+		free(szLine);
+	}
+#	ifdef DEBUG
+	LOG(log_debug, logtype_default, "SYNOATNeedHup: [%d]", ret);
+#	endif
+	return ret;
+}
+#endif /* MY_ABC_HERE */
+
 /* send signal to all child processes */
 void server_child_kill(server_child *children, int forkid, int sig)
 {
@@ -232,7 +395,32 @@ void server_child_kill(server_child *children, int forkid, int sig)
         child = fork->table[i];
         while (child) {
             tmp = child->next;
+#ifdef MY_ABC_HERE
+			if (child->valid && (sig == SIGHUP || sig == SIGHUPGUEST)) {
+				// HUP signal -> need more checking         
+				switch (SYNOATNeedHup(child->pid, sig)) {
+				case -1:
+					break; // do nothing
+				case SHARE_HUP:
+#ifdef DEBUG
+					LOG(log_debug, logtype_default, "=== Send SIGUSR1 to [%d]", child->pid);
+#endif
+					kill(child->pid, SIGUSR1);
+					break; // share changed
+				default:
+#ifdef DEBUG
+					LOG(log_debug, logtype_default, "=== Send SIGKILL to [%d]", child->pid);
+#endif
+					kill(child->pid, SIGKILL);
+				}
+			} else if (sig == SIGHUPALL) {
+				kill(child->pid, SIGHUP);
+			} else {
+				kill(child->pid, sig);
+			}
+#else
             kill(child->pid, sig);
+#endif
             child = tmp;
         }
     }

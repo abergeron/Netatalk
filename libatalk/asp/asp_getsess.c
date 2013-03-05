@@ -37,6 +37,10 @@
 
 #include "asp_child.h"
 
+#ifdef MY_ABC_HERE
+#include <synosdk/proc.h>
+#endif
+
 #ifndef WEXITSTATUS
 #define WEXITSTATUS(stat_val) ((unsigned)(stat_val) >> 8)
 #endif /* ! WEXITSTATUS */
@@ -247,7 +251,15 @@ ASP asp_getsession(ASP asp, server_child *server_children,
       break;
 
     case ASPFUNC_OPEN :
-      if (children->count < children->nsessions) {
+#ifdef MY_ABC_HERE
+	/* 
+	 *	Limit the maximum connections 
+	 */
+    if (SLIBCConnectionCountLogin(10, 1) >= 0)
+#else
+      if (children->count < children->nsessions) 
+#endif /* MY_ABC_HERE */
+	{
       struct asp_child    *asp_ac_tmp;
 
 	/* find a slot */
@@ -323,7 +335,11 @@ ASP asp_getsession(ASP asp, server_child *server_children,
 	
       } else {
 	asp->cmdbuf[0] = asp->cmdbuf[1] = 0;
+#ifdef MY_ABC_HERE
+	asperr = ASPERR_NOSESS;
+#else /* !MY_ABC_HERE */
 	asperr = ASPERR_SERVBUSY;
+#endif /* MY_ABC_HERE */
       }
 
       memcpy( asp->cmdbuf + 2, &asperr, sizeof(asperr));

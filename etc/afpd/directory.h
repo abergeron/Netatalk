@@ -113,7 +113,11 @@ extern struct path *cname (struct vol *, struct dir *, char **);
 
 extern int         deletecurdir (struct vol *);
 extern mode_t      mtoumode (struct maccess *);
+#ifdef MY_ABC_HERE
+extern void        utommode (struct stat *, struct maccess *, BOOL);
+#else
 extern void        utommode (struct stat *, struct maccess *);
+#endif
 extern int         getdirparams (const struct vol *, u_int16_t, struct path *,
                                  struct dir *, char *, size_t *);
 

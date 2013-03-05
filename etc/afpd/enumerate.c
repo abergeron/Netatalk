@@ -32,6 +32,9 @@
 #include "fork.h"
 #include "filedir.h"
 
+#ifdef MY_ABC_HERE
+#include <synosdk/ea.h>
+#endif
 #define min(a,b)	((a)<(b)?(a):(b))
 
 /*
@@ -106,9 +109,16 @@ char *check_dirent(const struct vol *vol, char *name)
     if (!vol->vfs->vfs_validupath(vol, name))
         return NULL;
 
+#ifdef MY_ABC_HERE
+	if (curdir && curdir->d_did != DIRDID_ROOT) {
+		return name;
+	}
+#endif
     /* check for vetoed filenames */
+#ifndef MY_ABC_HERE
     if (veto_file(vol->v_veto, name))
         return NULL;
+#endif
 
 #if 0
     char *m_name = NULL;
@@ -131,7 +141,10 @@ for_each_dirent(const struct vol *vol, char *name, dir_loop fn, void *data)
     struct dirent	*de;
     char            *m_name;
     int             ret;
-    
+#ifdef MY_ABC_HERE
+	static char FatCarrierReturn[3] = {0xef, 0x80, 0x8d};
+#endif
+
     if (NULL == ( dp = opendir( name)) ) {
         return -1;
     }
@@ -140,6 +153,15 @@ for_each_dirent(const struct vol *vol, char *name, dir_loop fn, void *data)
         if (!(m_name = check_dirent(vol, de->d_name)))
             continue;
 
+#ifdef MY_ABC_HERE
+		int len = 0;
+		if (NULL != vol && ISADFS(vol->v_fstype) && 3 < (len = strlen(m_name))) {
+			if (!strncmp(m_name + len - 3, FatCarrierReturn, sizeof(FatCarrierReturn))) {
+				m_name[len-3] = 0x0D;
+				m_name[len-2] = '\0';
+			}
+		}
+#endif
         ret++;
         if (fn && fn(de,m_name, data) < 0) {
            closedir(dp);

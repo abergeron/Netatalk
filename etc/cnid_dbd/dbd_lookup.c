@@ -153,6 +153,58 @@ int dbd_lookup(DBD *dbd, struct cnid_dbd_rqst *rqst, struct cnid_dbd_rply *rply,
 
     /* Look for a CNID.  We have two options: dev/ino or did/name.  If we
        only get a match in one of them, that means a file has moved. */
+#ifdef MY_ABC_HERE
+    key.data = buf + CNID_DID_OFS;
+    key.size = CNID_DID_LEN + rqst->namelen + 1;
+
+    if ((rc = dbif_get(dbd, DBIF_IDX_DIDNAME, &key, &diddata, 0))  < 0) {
+        LOG(log_error, logtype_cnid, "dbd_lookup: Unable to get CNID %u, name %s",
+            ntohl(rqst->did), rqst->name);
+        rply->result = CNID_DBD_RES_ERR_DB;
+        return -1;
+    }
+    if (rc == 0) {
+        didname = 0;
+    }
+    else {
+        memcpy(&id_didname, diddata.data, sizeof(rply->cnid));
+        memcpy(&type_didname, (char *)diddata.data +CNID_TYPE_OFS, sizeof(type_didname));
+        type_didname = ntohl(type_didname);
+    }
+
+	if (didname && (type_didname == rqst->type) && 0 != id_didname) {
+		uint64_t dev_didname, ino_didname, dev_rqst, ino_rqst;
+       	memcpy(&dev_didname, (char *)diddata.data + CNID_DEV_OFS, 8);
+        memcpy(&ino_didname, (char *)diddata.data + CNID_INO_OFS, 8);
+       	memcpy(&dev_rqst, (char *)buf + CNID_DEV_OFS, 8);
+        memcpy(&ino_rqst, (char *)buf + CNID_INO_OFS, 8);
+        LOG(log_maxdebug, logtype_cnid,
+                    "didname dev: %llu, ino: %llu --- request dev: %llu, ino: %llu",
+                     dev_didname, ino_didname, dev_rqst, ino_rqst);
+		if (dev_didname == dev_rqst && ino_didname == ino_rqst) {
+ 	        rply->cnid = id_didname;
+    	    rply->result = CNID_DBD_RES_OK;
+	        return 1;
+		}	
+	}
+
+    key.data = buf + CNID_DEVINO_OFS;
+    key.size = CNID_DEVINO_LEN;
+    if ((rc = dbif_get(dbd, DBIF_IDX_DEVINO, &key, &devdata, 0))  < 0) {
+        LOG(log_error, logtype_cnid, "dbd_lookup: Unable to get CNID %u, name %s",
+            ntohl(rqst->did), rqst->name);
+        rply->result = CNID_DBD_RES_ERR_DB;
+        return -1;
+    }
+    if (rc == 0) {
+        devino = 0;
+    }
+    else {
+        memcpy(&id_devino, devdata.data, sizeof(rply->cnid));
+        memcpy(&type_devino, (char *)devdata.data +CNID_TYPE_OFS, sizeof(type_devino));
+        type_devino = ntohl(type_devino);
+    }
+#else
     key.data = buf + CNID_DEVINO_OFS;
     key.size = CNID_DEVINO_LEN;
 
@@ -188,7 +240,7 @@ int dbd_lookup(DBD *dbd, struct cnid_dbd_rqst *rqst, struct cnid_dbd_rply *rply,
         memcpy(&type_didname, (char *)diddata.data +CNID_TYPE_OFS, sizeof(type_didname));
         type_didname = ntohl(type_didname);
     }
-
+#endif
     LOG(log_maxdebug, logtype_cnid, "dbd_lookup(name:'%s', did:%u, dev/ino:0x%llx/0x%llx) {devino: %u, didname: %u}", 
         rqst->name, ntohl(rqst->did), (unsigned long long)rqst->dev, (unsigned long long)rqst->ino, devino, didname);
 

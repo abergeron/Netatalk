@@ -44,6 +44,9 @@
 
 #include <atalk/afp.h>
 #include <atalk/uam.h>
+#ifdef MY_ABC_HERE
+#include <atalk/unicode.h>
+#endif
 
 #define KEYSIZE 16
 #define PASSWDLEN 64
@@ -475,6 +478,25 @@ static int pam_logincont(void *obj, struct passwd **uam_pwd,
     rbuf[PASSWDLEN] = '\0';
     PAM_password = rbuf;
 
+#ifdef MY_ABC_HERE
+    /* convert passwd from MAC_ROMAN to UTF8 */ 
+    char dstBuf[PASSWDLEN*6+1];
+    bzero(dstBuf, sizeof(dstBuf));
+    PAM_password = dstBuf;
+    u_int16_t flags = (CONV_UNESCAPEHEX);
+    if((size_t)-1 == convert_charset( CH_MAC_ROMAN , CH_UTF8, 0, rbuf, strlen(rbuf), dstBuf,
+                                       sizeof(dstBuf), &flags)){
+        LOG(log_error, logtype_uams, "Conversion from MAC_ROMAN to UTF8 failed.  PAM_password: %s", rbuf);
+        int j=0;                                                
+        while(*(rbuf+j) != '\0'){
+            LOG(log_error, logtype_uams, "code:%x ", *(rbuf+j));
+            j++;
+        }
+        err = AFPERR_NOTAUTH;
+        goto logincont_err;
+    }
+#endif
+
     err = AFPERR_NOTAUTH;
     PAM_error = pam_start("netatalk", PAM_username, &PAM_conversation,
 			  &pamh);
@@ -489,7 +511,11 @@ static int pam_logincont(void *obj, struct passwd **uam_pwd,
     /* solaris craps out if PAM_TTY and PAM_RHOST aren't set. */
     pam_set_item(pamh, PAM_TTY, "afpd");
     pam_set_item(pamh, PAM_RHOST, hostname);
+#ifdef MY_ABC_HERE
+    PAM_error = pam_authenticate(pamh, PAM_SILENT);
+#else
     PAM_error = pam_authenticate(pamh,0);
+#endif
     if (PAM_error != PAM_SUCCESS) {
       if (PAM_error == PAM_MAXTRIES) 
 	err = AFPERR_PWDEXPR;
@@ -500,7 +526,11 @@ static int pam_logincont(void *obj, struct passwd **uam_pwd,
       goto logincont_err;
     }      
 
+#ifdef MY_ABC_HERE
+    PAM_error = pam_acct_mgmt(pamh, PAM_SILENT);
+#else
     PAM_error = pam_acct_mgmt(pamh, 0);
+#endif
     if (PAM_error != PAM_SUCCESS ) {
       /* Log Entry */
       LOG(log_info, logtype_uams, "uams_dhx_pam.c :PAM: PAM_Error: %s",
@@ -687,7 +717,11 @@ static int pam_changepw(void *obj, char *username,
     /* we might need to do this as root */
     uid = geteuid();
     seteuid(0);
+#ifdef MY_ABC_HERE
+    PAM_error = pam_authenticate(lpamh, PAM_SILENT);
+#else
     PAM_error = pam_authenticate(lpamh, 0);
+#endif
     if (PAM_error != PAM_SUCCESS) {
       seteuid(uid);
       pam_end(lpamh, PAM_error);

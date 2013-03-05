@@ -75,6 +75,10 @@ typedef struct {
  * - indexed just by taking DSIreqID mod REPLAYCACHE_SIZE
  */
 static rc_elem_t replaycache[REPLAYCACHE_SIZE];
+#ifdef MY_ABC_HERE
+extern int SYNOAppleReloadVol(AFPObj *obj);
+//static int gfCheckVolPerm = 0; /** indicate whether need to check smb.conf */
+#endif /* MY_ABC_HERE */
 
 static sigjmp_buf recon_jmp;
 static void afp_dsi_close(AFPObj *obj)
@@ -105,6 +109,9 @@ static void afp_dsi_close(AFPObj *obj)
     log_dircache_stat();
 
     dsi_close(dsi);
+#ifdef MY_ABC_HERE
+	obj->handle = NULL;
+#endif
 }
 
 /* -------------------------------
@@ -209,12 +216,17 @@ static void afp_dsi_transfer_session(int sig _U_)
     siglongjmp(recon_jmp, 1);
 }
 
+#ifndef MY_ABC_HERE
 /* ------------------- */
 static void afp_dsi_timedown(int sig _U_)
 {
     struct sigaction	sv;
     struct itimerval	it;
     DSI                 *dsi = (DSI *)AFPobj->handle;
+#ifdef MY_ABC_HERE
+    if (dsi->flags & DSI_DIE) // need not do this when child is in die stat
+        return;
+#endif /* MY_ABC_HERE */
     dsi->flags |= DSI_DIE;
     /* shutdown and don't reconnect. server going down in 5 minutes. */
     setmessage("The server is going down for maintenance.");
@@ -253,6 +265,7 @@ static void afp_dsi_timedown(int sig _U_)
         afp_dsi_die(EXITERR_SYS);
     }
 }
+#endif
 
 /* ---------------------------------
  * SIGHUP reload configuration file
@@ -289,9 +302,20 @@ static void alarm_handler(int sig _U_)
     int err;
     DSI *dsi = (DSI *)AFPobj->handle;
 
+#if 0
+	//def MY_ABC_HERE
+    if (gfCheckVolPerm == 0) {
+        gfCheckVolPerm = 1;
+    }
+#endif /* MY_ABC_HERE */
     /* we have to restart the timer because some libraries may use alarm() */
     setitimer(ITIMER_REAL, &dsi->timer, NULL);
 
+#ifdef MY_ABC_HERE
+    if (!dsi) {
+		return;
+	}
+#endif
     /* we got some traffic from the client since the previous timer tick. */
     if ((dsi->flags & DSI_DATA)) {
         dsi->flags &= ~DSI_DATA;
@@ -320,7 +344,13 @@ static void alarm_handler(int sig _U_)
     } 
 
     if (dsi->flags & DSI_DISCONNECTED) {
-        if (geteuid() == 0) {
+#ifdef MY_ABC_HERE
+		// check username instead of euid
+		if (!dsi->AFPobj || !dsi->AFPobj->username)
+#else
+        if (geteuid() == 0) 
+#endif
+		{
             LOG(log_note, logtype_afpd, "afp_alarm: unauthenticated user, connection problem");
             afp_dsi_die(EXITERR_CLNT);
         }
@@ -343,7 +373,13 @@ static void alarm_handler(int sig _U_)
         LOG(log_debug, logtype_afpd, "afp_alarm: sending DSI tickle");
         err = dsi_tickle(AFPobj->handle);
     if (err <= 0) {
-        if (geteuid() == 0) {
+#ifdef MY_ABC_HERE
+		// check username instead of euid
+		if (!dsi->AFPobj || !dsi->AFPobj->username)
+#else
+        if (geteuid() == 0) 
+#endif
+        {
             LOG(log_note, logtype_afpd, "afp_alarm: unauthenticated user, connection problem");
             afp_dsi_die(EXITERR_CLNT);
         }
@@ -393,13 +429,22 @@ void afp_over_dsi(AFPObj *obj)
     obj->reply = (int (*)()) dsi_cmdreply;
     obj->attention = (int (*)(void *, AFPUserBytes)) dsi_attention;
     dsi->tickle = 0;
+#ifdef MY_ABC_HERE
+	obj->syno_conf_mtime = 0;
+#endif
 
     memset(&action, 0, sizeof(action));
     sigfillset(&action.sa_mask);
     action.sa_flags = SA_RESTART;
 
     /* install SIGHUP */
+#ifdef MY_ABC_HERE
+    /*  set down in 5 minutes  */
+	// Let child timedown if got SIGHUP
+    action.sa_handler = afp_dsi_die;
+#else
     action.sa_handler = afp_dsi_reload;
+#endif /* MY_ABC_HERE */
     if ( sigaction( SIGHUP, &action, NULL ) < 0 ) {
         LOG(log_error, logtype_afpd, "afp_over_dsi: sigaction: %s", strerror(errno) );
         afp_dsi_die(EXITERR_SYS);
@@ -434,7 +479,11 @@ void afp_over_dsi(AFPObj *obj)
     }
 
     /*  SIGUSR1 - set down in 5 minutes  */
+#ifdef MY_ABC_HERE
+    action.sa_handler = afp_dsi_reload;
+#else
     action.sa_handler = afp_dsi_timedown;
+#endif /* MY_ABC_HERE */
     action.sa_flags = SA_RESTART;
     if ( sigaction( SIGUSR1, &action, NULL) < 0 ) {
         LOG(log_error, logtype_afpd, "afp_over_dsi: sigaction: %s", strerror(errno) );
@@ -539,9 +588,26 @@ void afp_over_dsi(AFPObj *obj)
             dsi->tickle = 0;
         }
 
+#if 0
+		//def MY_ABC_HERE
+        // periodically check whether need to update volume acl
+		//
+		// AFP now would reload volumes if it gets SIGUSR1 (child)
+		// TODO: if we still need SYNOUpdateVolPerm  ??
+        if (gfCheckVolPerm) {
+            gfCheckVolPerm = 0;
+            if (SYNOUpdateVolPerm(AFPobj) == -2) {
+                afp_dsi_die(0);
+            }
+        }
+#endif
         if (reload_request) {
             reload_request = 0;
+#ifdef MY_ABC_HERE
+			SYNOAppleReloadVol(AFPobj);
+#else
             load_volumes(AFPobj);
+#endif
         }
 
         /* The first SIGINT enables debugging, the next restores the config */
@@ -615,14 +681,22 @@ void afp_over_dsi(AFPObj *obj)
                     dsi->datalen = DSI_DATASIZ;
                     dsi->flags |= DSI_RUNNING;
 
+#ifdef MY_ABC_HERE
+                    LOG(log_info, logtype_afpd, "<== Start AFP command: %s", AfpNum2name(function));
+#else
                     LOG(log_debug, logtype_afpd, "<== Start AFP command: %s", AfpNum2name(function));
+#endif
 
                     err = (*afp_switch[function])(obj,
-                                                  (char *)&dsi->commands, dsi->cmdlen,
+                                                  dsi->commands, dsi->cmdlen,
                                                   (char *)&dsi->data, &dsi->datalen);
 
+#ifdef MY_ABC_HERE
+                    LOG(log_info, logtype_afpd, "==> Finished AFP command: %s -> %s", AfpNum2name(function), AfpErr2name(err));
+#else
                     LOG(log_debug, logtype_afpd, "==> Finished AFP command: %s -> %s",
                         AfpNum2name(function), AfpErr2name(err));
+#endif
 
                     dir_free_invalid_q();
 
@@ -664,7 +738,7 @@ void afp_over_dsi(AFPObj *obj)
                 LOG(log_debug, logtype_afpd, "<== Start AFP command: %s", AfpNum2name(function));
 
                 err = (*afp_switch[function])(obj,
-                                              (char *)&dsi->commands, dsi->cmdlen,
+                                              dsi->commands, dsi->cmdlen,
                                               (char *)&dsi->data, &dsi->datalen);
 
                 LOG(log_debug, logtype_afpd, "==> Finished AFP command: %s -> %s",

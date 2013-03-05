@@ -117,7 +117,11 @@ ssize_t readt(int socket, void *data, const size_t length, int setnonblocking, i
                 while ((ret = select(socket + 1, &rfds, NULL, NULL, &tv)) < 1) {
                     switch (ret) {
                     case 0:
+#ifdef MY_ABC_HERE
+                        LOG(log_debug6, logtype_afpd, "select timeout %d s", timeout);
+#else
                         LOG(log_debug, logtype_afpd, "select timeout %d s", timeout);
+#endif
                         errno = EAGAIN;
                         goto exit;
 

@@ -159,6 +159,10 @@ extern UAM_MODULE_EXPORT logtype_conf_t type_configs[logtype_end_of_list_marker]
     Global function decarations
    ========================================================================= */
 
+#ifdef MY_ABC_HERE
+int SYNOATLogSet(char *szLogType, char *szLogLevel, char *szLogID, char *szParam1, char *szParam2, char *szParam3, char *szParam4);
+#endif /* MY_ABC_HERE */
+
 /*  */
 void log_init(void);
 

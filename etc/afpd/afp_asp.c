@@ -34,9 +34,17 @@
 #include <atalk/util.h>
 #include <atalk/globals.h>
 
+#ifdef MY_ABC_HERE
+#include <atalk/globals.h>
+#endif
 #include "switch.h"
 #include "auth.h"
 #include "fork.h"
+
+#ifdef MY_ABC_HERE
+extern int SYNOAppleReloadVol(AFPObj *obj);
+//static int gfCheckVolACL = 0; /** indicate whether need to check smb.conf */
+#endif /* MY_ABC_HERE */
 
 #ifdef FORCE_UIDGID
 #warning UIDGID
@@ -152,6 +160,16 @@ static void afp_asp_timedown(int sig _U_)
 {
     struct sigaction	sv;
     struct itimerval	it;
+#ifdef MY_ABC_HERE
+    static int fChildDown = 0;  /** a flag to record whether it executes this function before */
+
+    /* if reach this funciton before, just return*/
+    if (fChildDown == 1) {
+        return;
+    } else {
+        fChildDown = 1;
+    }
+#endif /* MY_ABC_HERE */
 
     /* shutdown and don't reconnect. server going down in 5 minutes. */
     asp_attention(child->handle, AFPATTN_SHUTDOWN | AFPATTN_NORECONNECT |
@@ -187,6 +205,19 @@ static void afp_asp_timedown(int sig _U_)
     }
 }
 
+#if 0
+#ifdef MY_ABC_HERE
+/** SIGALARM handler, Set gfCheckVolACL to 1 for updating the volume ACL. */
+void SYNOATAlarm() 
+{
+    if (gfCheckVolACL == 0) 
+    {
+        gfCheckVolACL = 1;   /* if gfCheckVolACL ==1, I'll update the volume ACL */
+    }    
+    return;
+}
+#endif /* MY_ABC_HERE */
+#endif
 /* ---------------------------------
  * SIGHUP reload configuration file
 */
@@ -215,6 +246,12 @@ void afp_over_asp(AFPObj *obj)
 #ifdef DEBUG1
     int ccnt = 0;
 #endif    
+#if 0
+#ifdef MY_ABC_HERE
+    struct itimerval timer;
+    struct sigaction	sv;
+#endif /* MY_ABC_HERE */
+#endif
 
     AFPobj = obj;
     obj->exit = afp_asp_die;
@@ -229,7 +266,11 @@ void afp_over_asp(AFPObj *obj)
     memset(&action, 0, sizeof(action));
 
     /* install SIGHUP */
+#ifdef MY_ABC_HERE
+    action.sa_handler = afp_asp_timedown; 
+#else /* !MY_ABC_HERE */
     action.sa_handler = afp_asp_reload; 
+#endif
     sigemptyset( &action.sa_mask );
     sigaddset(&action.sa_mask, SIGTERM);
     sigaddset(&action.sa_mask, SIGUSR1);
@@ -270,8 +311,12 @@ void afp_over_asp(AFPObj *obj)
     }
 #endif /* SERVERTEXT */
 
+#ifdef MY_ABC_HERE
+    action.sa_handler = afp_asp_reload; 
+#else
     /*  SIGUSR1 - set down in 5 minutes  */
     action.sa_handler = afp_asp_timedown; 
+#endif
     sigemptyset( &action.sa_mask );
     sigaddset(&action.sa_mask, SIGHUP);
     sigaddset(&action.sa_mask, SIGTERM);
@@ -284,10 +329,31 @@ void afp_over_asp(AFPObj *obj)
         afp_asp_die(EXITERR_SYS);
     }
 
-    if (dircache_init(obj->options.dircachesize) != 0) {
+	if (dircache_init(obj->options.dircachesize) != 0) {
         LOG(log_error, logtype_afpd, "afp_over_asp: dircache_init error");
         afp_asp_die(EXITERR_SYS);
     }
+
+#if 0
+#ifdef MY_ABC_HERE
+    memset(&sv, 0, sizeof(sv));
+    sv.sa_handler = SYNOATAlarm;
+    sigemptyset( &sv.sa_mask );
+    sv.sa_flags = SA_RESTART;
+    if ( sigaction( SIGALRM, &sv, 0 ) < 0 ) {
+        LOG(log_error, logtype_afpd, "afp_over_asp: sigaction: %s", strerror(errno) );
+        afp_asp_die(1);
+    }
+    
+    timer.it_interval.tv_sec = timer.it_value.tv_sec = 30;
+    timer.it_interval.tv_usec = timer.it_value.tv_usec = 0;   
+
+    if ( setitimer(ITIMER_REAL, &timer , NULL) < 0 ) {
+        LOG(log_error, logtype_afpd, "afp_over_asp: setitimer: %s", strerror(errno) );        
+        afp_asp_die(1);
+    } 
+#endif /* MY_ABC_HERE */
+#endif
 
     LOG(log_info, logtype_afpd, "session from %u.%u:%u on %u.%u:%u",
         ntohs( asp->asp_sat.sat_addr.s_net ),
@@ -297,9 +363,24 @@ void afp_over_asp(AFPObj *obj)
         atp_sockaddr( asp->asp_atp )->sat_port );
 
     while ((reply = asp_getrequest(asp))) {
+#if 0
+#ifdef MY_ABC_HERE
+        if (gfCheckVolACL == 1) {
+            // peridically check whether need to update volume acl
+            if (SYNOUpdateVolPerm(obj) == -2) {
+                afp_asp_die(0);
+            }
+            gfCheckVolACL = 0;
+        }
+#endif /* MY_ABC_HERE */
+#endif
         if (reload_request) {
             reload_request = 0;
+#ifdef MY_ABC_HERE
+			SYNOAppleReloadVol(obj);
+#else
             load_volumes(child);
+#endif
         }
         switch (reply) {
         case ASPFUNC_CLOSE :

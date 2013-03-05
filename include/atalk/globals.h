@@ -23,6 +23,9 @@
 #include <atalk/compat.h>
 #include <atalk/unicode.h>
 #include <atalk/uam.h>
+#ifdef MY_ABC_HERE
+#include <synosdk/user.h>
+#endif
 
 /* #define DOSFILELEN 12 */             /* Type1, DOS-compat*/
 #define MACFILELEN 31                   /* Type2, HFS-compat */
@@ -31,8 +34,15 @@
 /* #define UTF8FILELEN_SPEC 0xFFFF */   /* Type3, spec on document */
 /* #define HFSPLUSFILELEN 510 */        /* HFS+ spec, 510byte = 255codepoint */
 
+#ifdef MY_ABC_HERE
+#define MAXUSERLEN SYNO_USERNAME_UTF8_MAX+1
+#else
 #define MAXUSERLEN 256
+#endif
 
+#ifdef MY_ABC_HERE
+#define OPTION_CUSTOMLOG	 (1 << 20) /* set log flag to avoid fd been closed while daemonize */
+#endif
 #define OPTION_DEBUG         (1 << 0)
 #define OPTION_USERVOLFIRST  (1 << 1)
 #define OPTION_NOUSERVOL     (1 << 2)
@@ -126,6 +136,9 @@ typedef struct _AFPObj {
 #ifdef FORCE_UIDGID
     int                 force_uid;
     uidgidset		uidgid;
+#endif
+#ifdef MY_ABC_HERE
+	time_t syno_conf_mtime;
 #endif
 } AFPObj;
 

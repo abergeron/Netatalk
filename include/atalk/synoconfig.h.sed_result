@@ -1,0 +1,119 @@
+
+#ifndef _SYNO_AT_CONFIG
+#define _SYNO_AT_CONFIG
+
+
+#include <linux/syno.h>
+
+
+
+
+
+#define SYNO_AT
+
+
+#define SYNO_AT_ROOTDIR_VETO
+
+
+#define SYNO_AT_INCLUDE
+
+
+ 
+
+
+#define SYNO_AT_CNID
+
+
+#define SYNO_AT_LOG
+
+
+
+
+#define SYNO_AT_AUTH
+
+
+
+#define SYNO_AT_UNICODE
+
+
+
+#define SYNO_AT_ADMINGRP
+
+
+
+
+#define SYNO_AT_VOLUME
+#include <synoglobal.h>
+#undef MAXPATHLEN
+#define MAXPATHLEN MAX_PATH_LEN
+#undef NO_QUOTA_SUPPORT
+
+
+#define SYNO_AT_HUP
+#define SZ_AFP_NGUEST_MOD	"uamsNguest.so"
+#define SZ_AFP_GUEST_MOD	"uams_guest.so"
+
+
+
+
+#define SYNO_AT_EA
+
+
+#define SYNO_AT_SHARE_MAX
+
+
+#define SYNO_AT_MAXCONN
+
+
+#define SYNO_AT_CASE_SENSITIVE
+
+
+#ifdef SYNO_FS_SYNO_ACL
+#define SYNO_AT_ACL
+#endif
+
+
+#define SYNO_AT_SEARCH
+
+
+#define SYNO_AT_SAMBA_ATTR
+
+
+#define SYNO_AT_ON_CIFS
+
+
+#define SYNO_AT_SENDFILE
+
+
+#define SYNO_AT_HIBERNATION
+
+
+#ifndef SYNO_PPC_QORIQ
+#define SYNO_AT_RECVFILE
+#endif
+
+
+#define SYNO_AT_RECYCLE_BIN
+
+
+#define SYNO_AT_CHK_SLNK
+
+#define SYNO_PERFORMANCE_ADD_CACHE
+#define SYNO_PERFORMANCE_NO_VETO_FILE
+#define SYNO_PERFORMANCE_CNID_LOOKUP
+#define SYNO_PERFORMANCE_SETDIR
+#define SYNO_PERFORMANCE_MOVECWD
+
+
+
+#define SYNO_AT_CREATE_TIME
+
+#ifdef SYNO_AT_CREATE_TIME
+#define SMB_WRONG_CREATE_TIME 443779200
+#endif
+
+#define SYNO_AT_EXTERNAL
+
+#define SYNO_AT_ICON
+
+#endif 

@@ -42,6 +42,16 @@
 #include "unix.h"
 #include "mangle.h"
 #include "hash.h"
+#ifdef MY_ABC_HERE
+#include <synosdk/user.h>
+#include <synosdk/ea.h>
+#endif
+#ifdef MY_ABC_HERE
+#include <synosdk/index.h>
+#endif
+#ifdef MY_ABC_HERE
+extern void synoSmbAttrGet(const char *filename, struct adouble* ad);
+#endif
 
 /*
  * FIXMEs, loose ends after the dircache rewrite:
@@ -128,6 +138,11 @@ static int netatalk_mkdir(const struct vol *vol, const char *name)
             return( AFPERR_PARAM );
         }
     }
+#ifdef MY_ABC_HERE
+	if ((uid_t)-1 != ad_getfuid()) {
+		lchown(name, ad_getfuid(), -1);
+	}
+#endif /* MY_ABC_HERE */
     return AFP_OK;
 }
 
@@ -473,6 +488,9 @@ struct dir *dirlookup_bypath(const struct vol *vol, const char *path)
     LOG(log_debug, logtype_afpd, "dirlookup_bypath: rpath: \"%s\"", cfrombstr(rpath));
 
     EC_NULL(statpath = bfromcstr(vol->v_path));          /* 2. */
+#ifdef MY_ABC_HERE
+	EC_ZERO(bcatcstr(statpath, "/"));
+#endif
 
     l = bsplit(rpath, '/');
     for (int i = 0; i < l->qty ; i++) {                  /* 3. */
@@ -857,6 +875,11 @@ struct dir *dir_new(const char *m_name,
  */
 void dir_free(struct dir *dir)
 {
+#ifdef MY_ABC_HERE
+	if (NULL == dir) {
+		return;
+	}
+#endif
     if (dir->d_u_name != dir->d_m_name) {
         bdestroy(dir->d_u_name);
     }
@@ -1321,6 +1344,24 @@ struct path *cname(struct vol *vol, struct dir *dir, char **cpath)
 
         /* Now chdir to the evaluated dir */
         if (movecwd( vol, cdir ) < 0 ) { /* 16 */
+#ifdef MY_ABC_HERE
+			/* B#24454:
+			 * the subfolder - ret.u_name is exist.
+			 * But its parent is changed. Hence we should re-add this stale dir cache
+			 */
+			if (ret.st_valid && 0 == ret.st_errno) {
+				dir_remove(vol, cdir);
+				if ((cdir = dir_add(vol, dir, &ret, strlen(ret.u_name))) == NULL) {
+					LOG(log_error, logtype_afpd, "cname(did:%u, name:'%s', cwd:'%s'): failed to add dir", ntohl(dir->d_did), ret.u_name, getcwdpath());
+					return NULL;
+				}
+				if (movecwd( vol, cdir ) == 0) {
+					dir = cdir;
+					ret.m_name[0] = 0;
+					break;
+				}
+			}
+#endif
             LOG(log_debug, logtype_afpd, "cname(cwd:'%s'): failed to chdir to new subdir '%s': %s",
                 cfrombstr(curdir->d_fullpath), cfrombstr(cdir->d_fullpath), strerror(errno));
             if (len == 0)
@@ -1374,6 +1415,12 @@ int movecwd(const struct vol *vol, struct dir *dir)
         return 0;
     }
 
+#ifdef MY_ABC_HERE
+    if (NULL != curdir && !strcmp(cfrombstr(dir->d_fullpath), cfrombstr(curdir->d_fullpath))) {
+        goto End;
+    }
+#endif
+
     LOG(log_debug, logtype_afpd, "movecwd(to: did: %u, \"%s\")",
         ntohl(dir->d_did), cfrombstr(dir->d_fullpath));
 
@@ -1402,7 +1449,7 @@ int movecwd(const struct vol *vol, struct dir *dir)
         }
         return( -1 );
     }
-
+End:
     curdir = dir;
     return( 0 );
 }
@@ -1499,8 +1546,17 @@ int getdirparams(const struct vol *vol,
                    (1 << DIRPBIT_MDATE) |
                    (1 << DIRPBIT_BDATE) |
                    (1 << DIRPBIT_FINFO)))) {
-
+#ifdef MY_ABC_HERE
+		// deal with B#18677: create SynoResource to sync smb attr
+		synoSmbAttrGet(upath, &ad);
+		if (ad.ad_smb_attr) {
+			ad_init(&ad, vol->v_adouble, vol->v_ad_options | ADVOL_CACHE);
+		} else {
+			ad_init(&ad, vol->v_adouble, vol->v_ad_options);
+		}
+#else
         ad_init(&ad, vol->v_adouble, vol->v_ad_options);
+#endif
         if ( !ad_metadata( upath, ADFLAGS_CREATE|ADFLAGS_DIR, &ad) ) {
             isad = 1;
             if (ad.ad_md->adf_flags & O_CREAT) {
@@ -1513,6 +1569,9 @@ int getdirparams(const struct vol *vol,
                         LOG(log_error, logtype_afpd,
                             "getdirparams(\"%s\"): can't assign macname",
                             cfrombstr(dir->d_fullpath));
+#ifdef MY_ABC_HERE
+                        ad.ad_smb_over = 0;
+#endif
                         return AFPERR_MISC;
                     }
                 }
@@ -1557,8 +1616,22 @@ int getdirparams(const struct vol *vol,
             break;
 
         case DIRPBIT_CDATE :
-            if (!isad || (ad_getdate(&ad, AD_DATE_CREATE, &aint) < 0))
+#ifdef MY_ABC_HERE
+            if (!isad || (ad_getdate(&ad, AD_DATE_CREATE, &aint) < 0) ||
+				aint == AD_DATE_FROM_UNIX(SMB_WRONG_CREATE_TIME))
+			{
+				time_t ctime = 0;
+				if (0 == synoCreateTimeGet(upath, &ctime)) {
+					aint = AD_DATE_FROM_UNIX(ctime);
+				} else {
+					LOG(log_debug, logtype_afpd, "metadata: cant get the create time");
+					aint = AD_DATE_FROM_UNIX(st->st_mtime);
+				}
+			}
+#else
+            if (!isad || (ad_getdate(&ad, AD_DATE_CREATE, &aint) < 0)
                 aint = AD_DATE_FROM_UNIX(st->st_mtime);
+#endif
             memcpy( data, &aint, sizeof( aint ));
             data += sizeof( aint );
             break;
@@ -1702,6 +1775,9 @@ int getdirparams(const struct vol *vol,
             if ( isad ) {
                 ad_close_metadata( &ad );
             }
+#ifdef MY_ABC_HERE
+            ad.ad_smb_over = 0;
+#endif
             return( AFPERR_BITMAP );
         }
         bitmap = bitmap>>1;
@@ -1721,6 +1797,9 @@ int getdirparams(const struct vol *vol,
         ad_close_metadata( &ad );
     }
     *buflen = data - buf;
+#ifdef MY_ABC_HERE
+    ad.ad_smb_over = 0;
+#endif
     return( AFP_OK );
 }
 
@@ -1927,6 +2006,19 @@ int setdirparams(struct vol *vol, struct path *path, u_int16_t d_bitmap, char *b
         bitmap = bitmap>>1;
         bit++;
     }
+#ifdef MY_ABC_HERE
+	if ((d_bitmap == (1 << FILPBIT_MDATE)) && newdate) {
+		struct stat cur_st;
+		if (0 == path->st_valid) {
+			lstat(path->u_name, &cur_st);
+		} else {
+			cur_st.st_mtime = path->st.st_mtime;
+		}
+		if (newdate == AD_DATE_FROM_UNIX(cur_st.st_mtime)) {
+			return AFP_OK;
+		}
+	}
+#endif
     ad_init(&ad, vol->v_adouble, vol->v_ad_options);
 
     if (ad_open_metadata( upath, ADFLAGS_DIR, O_CREAT, &ad) < 0) {
@@ -2281,6 +2373,15 @@ int afp_createdir(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_
         return( AFPERR_PARAM );
     }
 
+#ifdef MY_ABC_HERE
+	if (vol->v_sharestatus & SHARE_STATUS_INDEXED) {
+		SLIBSynoIndexAdd(cfrombstr(dir->d_fullpath), SLIB_INDEX_ADD);
+	}
+	if (vol->v_sharestatus & SHARE_STATUS_FILEINDEXED) {
+		SLIBSynoFileIndexAdd(cfrombstr(dir->d_fullpath), NULL, SLIB_FILE_INDEX_ADD);
+	}
+#endif
+
     ad_init(&ad, vol->v_adouble, vol->v_ad_options);
     if (ad_open_metadata( ".", ADFLAGS_DIR, O_CREAT, &ad ) < 0)  {
         if (vol_noadouble(vol))
@@ -2386,12 +2487,14 @@ int deletecurdir(struct vol *vol)
             return  AFPERR_OLOCK;
         }
     }
+#ifndef MY_ABC_HERE
     err = vol->vfs->vfs_deletecurdir(vol);
     if (err) {
         LOG(log_error, logtype_afpd, "deletecurdir: error deleting .AppleDouble in \"%s\"",
             cfrombstr(curdir->d_fullpath));
         return err;
     }
+#endif
 
     /* now get rid of dangling symlinks */
     if ((dp = opendir("."))) {
@@ -2399,11 +2502,25 @@ int deletecurdir(struct vol *vol)
             /* skip this and previous directory */
             if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
                 continue;
-
+#ifdef MY_ABC_HERE
+			// @eaDir might exist since there're some broken ea file inside
+			if (!strcmp(de->d_name, SYNO_EA_DIR) && !stat(de->d_name, &st)) {
+				if (S_ISDIR(st.st_mode)) {
+					deletedir(-1, de->d_name);
+				} else {
+					netatalk_unlink(de->d_name);
+				}
+				continue;
+			}
+#endif
             /* bail if it's not a symlink */
             if ((lstat(de->d_name, &st) == 0) && !S_ISLNK(st.st_mode)) {
+#ifdef MY_ABC_HERE
+                LOG(log_warning, logtype_afpd, "deletecurdir(\"%s\"): not empty. has [%s]", cfrombstr(curdir->d_fullpath), de->d_name);
+#else
                 LOG(log_error, logtype_afpd, "deletecurdir(\"%s\"): not empty",
                     curdir->d_fullpath);
+#endif
                 closedir(dp);
                 return AFPERR_DIRNEMPT;
             }
@@ -2427,6 +2544,12 @@ int deletecurdir(struct vol *vol)
     if ( err ==  AFP_OK || err == AFPERR_NOOBJ) {
         cnid_delete(vol->v_cdb, fdir->d_did);
         dir_remove( vol, fdir );
+	#ifdef MY_ABC_HERE
+		// Delete EA after we delete the folder successfully
+		if ((err = vol->vfs->vfs_deletefile(vol, -1, cfrombstr(fdir->d_u_name)))) {
+			LOG(log_error, logtype_afpd, "RemoveEA Failed [%s]", cfrombstr(fdir->d_fullpath));
+		}
+	#endif
     } else {
         LOG(log_error, logtype_afpd, "deletecurdir(\"%s\"): netatalk_rmdir_all_errors error",
             cfrombstr(curdir->d_fullpath));
@@ -2446,7 +2569,12 @@ delete_done:
 int afp_mapid(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_t *rbuflen)
 {
     struct passwd   *pw;
+#ifdef MY_ABC_HERE
+	PSYNOGROUP pGroup = NULL;
+    struct group    *gr = NULL;
+#else
     struct group    *gr;
+#endif
     char        *name;
     u_int32_t           id;
     int         len, sfunc;
@@ -2484,11 +2612,24 @@ int afp_mapid(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_t *r
         memcpy( &id, ibuf, sizeof( id ));
         id = ntohl(id);
         if ( id != 0 ) {
-            if (NULL == ( gr = (struct group *)getgrgid( id ))) {
+#ifdef MY_ABC_HERE
+			if (0 > SYNOGroupGetByGID(id, &pGroup)) {
+				LOG(log_info, logtype_afpd, "Fail to get group byGID(%d)." SLIBERR_FMT, id, SLIBERR_ARGS);
+				return( AFPERR_NOITEM );
+			}
+#else
+            if (NULL == ( gr = (struct group *)getgrgid( id )))
+			{
                 return( AFPERR_NOITEM );
             }
+#endif
+#ifdef MY_ABC_HERE
+            len = convert_string_allocate( obj->options.unixcharset, (!utf8)?obj->options.maccharset:CH_UTF8_MAC,
+                                           pGroup->szName, -1, &name);
+#else
             len = convert_string_allocate( obj->options.unixcharset, (!utf8)?obj->options.maccharset:CH_UTF8_MAC,
                                            gr->gr_name, -1, &name);
+#endif
         } else {
             len = 0;
             name = NULL;
@@ -2557,13 +2698,24 @@ int afp_mapid(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_t *r
     *rbuflen += len;
     if (name)
         free(name);
+#ifdef MY_ABC_HERE
+	if (pGroup) {
+		SYNOGroupFree(pGroup);
+	}
+#endif
     return( AFP_OK );
 }
 
 int afp_mapname(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, char *rbuf, size_t *rbuflen)
 {
+#ifdef MY_ABC_HERE
+	PSYNOUSER		pUser = NULL;
+	PSYNOGROUP		pGroup = NULL;
+    struct passwd   *pw = NULL;
+#else
     struct passwd   *pw;
     struct group    *gr;
+#endif
     int             len, sfunc;
     u_int32_t       id;
     u_int16_t       ulen;
@@ -2607,9 +2759,17 @@ int afp_mapname(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, char *rbuf, siz
         switch ( sfunc ) {
         case 1 : /* unicode */
         case 3 :
+#ifdef MY_ABC_HERE
+			if (0 > SYNOUserGet(ibuf, &pUser)) {
+				LOG(log_info, logtype_afpd, "Fail to get synouser." SLIBERR_FMT, SLIBERR_ARGS);
+				return( AFPERR_NOITEM );
+			}
+			pw = (struct passwd *)pUser;
+#else
             if (NULL == ( pw = (struct passwd *)getpwnam( ibuf )) ) {
                 return( AFPERR_NOITEM );
             }
+#endif
             id = pw->pw_uid;
             id = htonl(id);
             memcpy( rbuf, &id, sizeof( id ));
@@ -2618,12 +2778,21 @@ int afp_mapname(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, char *rbuf, siz
 
         case 2 : /* unicode */
         case 4 :
-            LOG(log_debug, logtype_afpd, "afp_mapname: getgrnam for name: %s",ibuf);
-            if (NULL == ( gr = (struct group *)getgrnam( ibuf ))) {
+            LOG(log_debug, logtype_afpd, "afp_mapname: gettgrnam for name: %s",ibuf);
+#ifdef MY_ABC_HERE
+			if (0 > SYNOGroupGet(ibuf, &pGroup)) {
+				LOG(log_info, logtype_afpd, "Fail to get synogroup(%s)." SLIBERR_FMT, ibuf, SLIBERR_ARGS);
+                return( AFPERR_NOITEM );
+			}
+            id = pGroup->nGid;
+#else
+			if (NULL == ( gr = (struct group *)getgrnam( ibuf ))) 
+			{
                 return( AFPERR_NOITEM );
             }
             id = gr->gr_gid;
-            LOG(log_debug, logtype_afpd, "afp_mapname: getgrnam for name: %s -> id: %d",ibuf, id);
+#endif
+            LOG(log_debug, logtype_afpd, "afp_mapname: gettgrnam for name: %s -> id: %d",ibuf, id);
             id = htonl(id);
             memcpy( rbuf, &id, sizeof( id ));
             *rbuflen = sizeof( id );
@@ -2642,6 +2811,14 @@ int afp_mapname(AFPObj *obj _U_, char *ibuf, size_t ibuflen _U_, char *rbuf, siz
             break;
         }
     }
+#ifdef MY_ABC_HERE
+	if (pUser) {
+		SYNOUserFree(pUser);
+	}
+	if (pGroup) {
+		SYNOUserFree(pGroup);
+	}
+#endif
     return( AFP_OK );
 }
 

@@ -48,6 +48,10 @@ char *strchr (), *strrchr ();
 #include "acls.h"
 #endif
 
+#ifdef MY_ABC_HERE
+#include <synoacl.h>
+#define chmod(name, mode) SYNOACLChmod(name, -1, mode)
+#endif
 /*
  * Get the free space on a partition.
  */
@@ -115,10 +119,24 @@ static int utombits(mode_t bits)
 /* --------------------------------
     cf AFP 3.0 page 63
 */
+#ifdef MY_ABC_HERE
+void utommode(struct stat *stat, struct maccess *ma, BOOL isACL)
+#else
 void utommode(struct stat *stat, struct maccess *ma)
+#endif
 {
 mode_t mode;
 
+#ifdef MY_ABC_HERE
+	if (S_ISREG(stat->st_mode)) {
+		// Set the owner permission otherwise Finder.app would fail to open donwloaded files
+		if (FALSE == isACL) {
+			stat->st_mode |= S_IRUSR | S_IWUSR;
+		} else {
+			stat->st_mode |= S_IRWXU;
+		}
+	}
+#endif
     mode = stat->st_mode;
     ma->ma_world = utombits( mode );
     mode = mode >> 3;
@@ -131,7 +149,16 @@ mode_t mode;
     /* ma_user is a union of all permissions but we must follow
      * unix perm
     */
-    if ( (uuid == stat->st_uid) || (uuid == 0)) {
+#ifdef MY_ABC_HERE
+	// Allow admin group to do all actions 
+	// no matter what kinds of permission owner has
+    if (uuid == 0) {
+        ma->ma_user |= AR_UOWN | AR_USEARCH | AR_UREAD | AR_UWRITE;
+	} else if (uuid == stat->st_uid)
+#else
+    if ( (uuid == stat->st_uid) || (uuid == 0))
+#endif
+	{
         ma->ma_user = ma->ma_owner | AR_UOWN;
     }
     else if ( gmem( stat->st_gid )) {
@@ -140,6 +167,13 @@ mode_t mode;
     else {
         ma->ma_user = ma->ma_world;
     }
+#ifdef MY_ABC_HERE
+	if (S_ISDIR(stat->st_mode)) {
+		// HACK
+		// remap the permission since the folder linux permission might be wrong as acl enabled
+		ma->ma_user |= AR_USEARCH | AR_UREAD | AR_UWRITE;
+	}
+#endif
 
     /*
      * There are certain things the mac won't try if you don't have
@@ -179,7 +213,11 @@ void accessmode(const struct vol *vol, char *path, struct maccess *ma, struct di
             return;
         st = &sb;
     }
+#ifdef MY_ABC_HERE
+    utommode( st, ma, IS_FILE_SUPPORT_ACL(path));
+#else
     utommode( st, ma );
+#endif
 #ifdef HAVE_ACLS
     acltoownermode(vol, path, st, ma);
 #endif

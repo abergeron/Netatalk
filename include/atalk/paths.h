@@ -16,7 +16,7 @@
 
 /* lock file path. this should be re-organized a bit. */
 #if ! defined (_PATH_LOCKDIR)
-#  if defined (FHS_COMPATIBILITY) || defined (__NetBSD__) || defined (__OpenBSD__)
+#  if defined (FHS_COMPATIBILITY) || defined (__NetBSD__) || defined (__OpenBSD__) || defined (MY_ABC_HERE)
 #    define _PATH_LOCKDIR	"/var/run/"
 #  elif defined (BSD4_4)
 #    ifdef MACOSX_SERVER
@@ -51,20 +51,20 @@
  */
 #define _PATH_ATALKDEBUG	"/tmp/atalkd.debug"
 #define _PATH_ATALKDTMP		"atalkd.tmp"
-#if defined (FHS_COMPATIBILITY) || defined (__NetBSD__) || defined (__OpenBSD__)
+#if defined (FHS_COMPATIBILITY) || defined (__NetBSD__) || defined (__OpenBSD__) || defined (MY_ABC_HERE)
 #  define _PATH_ATALKDLOCK	ATALKPATHCAT(_PATH_LOCKDIR,"atalkd.pid")
 #else
-#  define _PATH_ATALKDLOCK	ATALKPATHCAT(_PATH_LOCKDIR,"atalkd")
+#define _PATH_ATALKDLOCK	ATALKPATHCAT(_PATH_LOCKDIR,"atalkd")
 #endif
 
 /*
  * psorder paths
  */
 #define _PATH_TMPPAGEORDER	"/tmp/psorderXXXXXX"
-#if defined (FHS_COMPATIBILITY) || defined (__NetBSD__) || defined (__OpenBSD__)
+#if defined (FHS_COMPATIBILITY) || defined (__NetBSD__) || defined (__OpenBSD__) || defined (MY_ABC_HERE)
 #  define _PATH_PAPDLOCK	ATALKPATHCAT(_PATH_LOCKDIR,"papd.pid")
 #else
-#  define _PATH_PAPDLOCK	ATALKPATHCAT(_PATH_LOCKDIR,"papd")
+#define _PATH_PAPDLOCK	ATALKPATHCAT(_PATH_LOCKDIR,"papd")
 #endif
 
 /*
@@ -72,7 +72,7 @@
  */
 #define _PATH_AFPTKT		"/tmp/AFPtktXXXXXX"
 #define _PATH_AFP_IPC       ATALKPATHCAT(_PATH_LOCKDIR,"afpd_ipc")
-#if defined (FHS_COMPATIBILITY) || defined (__NetBSD__) || defined (__OpenBSD__)
+#if defined (FHS_COMPATIBILITY) || defined (__NetBSD__) || defined (__OpenBSD__) || defined (MY_ABC_HERE)
 #  define _PATH_AFPDLOCK	ATALKPATHCAT(_PATH_LOCKDIR,"afpd.pid")
 #else
 #  define _PATH_AFPDLOCK	ATALKPATHCAT(_PATH_LOCKDIR,"afpd")
@@ -81,10 +81,10 @@
 /*
  * cnid_metad paths
  */
-#if defined (FHS_COMPATIBILITY) || defined (__NetBSD__) || defined (__OpenBSD__)
+#if defined (FHS_COMPATIBILITY) || defined (__NetBSD__) || defined (__OpenBSD__) || defined (MY_ABC_HERE)
 #  define _PATH_CNID_METAD_LOCK	ATALKPATHCAT(_PATH_LOCKDIR,"cnid_metad.pid")
 #else
-#  define _PATH_CNID_METAD_LOCK	ATALKPATHCAT(_PATH_LOCKDIR,"cnid_metad")
+#define _PATH_CNID_METAD_LOCK	ATALKPATHCAT(_PATH_LOCKDIR,"cnid_metad")
 #endif
 
 #endif /* atalk/paths.h */

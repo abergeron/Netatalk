@@ -34,6 +34,10 @@ char *strchr (), *strrchr ();
 #include <atalk/uam.h>
 #include <atalk/util.h>
 
+#ifdef MY_ABC_HERE
+#include <synosdk/user.h>
+#endif /* MY_ABC_HERE */
+
 #ifndef MIN
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #endif /* MIN */
@@ -49,6 +53,9 @@ static int noauth_login(void *obj, struct passwd **uam_pwd,
 {
     struct passwd *pwent;
     char *guest, *username;
+#ifdef MY_ABC_HERE
+	PSYNOUSER pUser = NULL;
+#endif
 
     *rbuflen = 0;
     LOG(log_info, logtype_uams, "login noauth" );
@@ -62,11 +69,19 @@ static int noauth_login(void *obj, struct passwd **uam_pwd,
       return AFPERR_MISC;
 
     strcpy(username, guest);
+#ifdef MY_ABC_HERE
+	if (0 > SYNOUserGet(guest, &pUser)) {    
+		LOG(log_error, logtype_uams, "noauth_login: Fail to get user(%s):" SLIBERR_FMT, guest, SLIBERR_ARGS);
+		return( AFPERR_BADUAM );
+    }
+	pwent = (struct passwd *)pUser;
+#else /* MY_ABC_HERE */
     if ((pwent = getpwnam(guest)) == NULL) {
 	LOG(log_error, logtype_uams, "noauth_login: getpwnam( %s ): %s",
 		guest, strerror(errno) );
 	return( AFPERR_BADUAM );
     }
+#endif /* MY_ABC_HERE */
 
 #ifdef AFS
     if ( setpag() < 0 ) {

@@ -569,6 +569,11 @@ size_t precompose_w (ucs2_t *name, size_t inplen, ucs2_t *comp, size_t *outlen)
 	base = *in;
 	while (*outlen > 2) {
 		i += 2;
+#ifdef MY_ABC_HERE
+		if (base == 0x2F) {
+			base = 0xF022;
+		}
+#endif /* MY_ABC_HERE */
 		if (i == inplen) {
 			*out = base;
 			out++;
@@ -680,6 +685,11 @@ size_t decompose_w (ucs2_t *name, size_t inplen, ucs2_t *comp, size_t *outlen)
 	while (i < inplen) {
 		base = *in;
 		comblen = 0;
+#ifdef MY_ABC_HERE
+		if (base == 0xF022) {
+			base = 0x2F;
+		}
+#endif /* MY_ABC_HERE */
 		
 		/* check ASCII first. this is frequent. */
 		if (base <= 0x007f) ;

@@ -28,6 +28,9 @@ struct ofork {
     int                 of_flags;
     struct ofork        **prevp, *next;
 //    struct ofork        *of_d_prev, *of_d_next;
+#ifdef MY_ABC_HERE
+	char				*of_fullpath;
+#endif
 };
 
 #define OPENFORK_DATA   (0)

@@ -8,13 +8,125 @@
 #define FILEIOFF_ATTR 14
 #define AFPFILEIOFF_ATTR 2
 
+#ifdef MY_ABC_HERE
+#include <sys/types.h>
+#include <attr/xattr.h>
+#include <synosdk/ea.h>
+#endif
 /* 
    Note:
    the "shared" and "invisible" attributes are opaque and stored and
    retrieved from the FinderFlags. This fixes Bug #2802236:
    <https://sourceforge.net/tracker/?func=detail&aid=2802236&group_id=8642&atid=108642>
  */
-int ad_getattr(const struct adouble *ad, u_int16_t *attr)
+#ifdef MY_ABC_HERE
+#include <atalk/logger.h>
+#include <linux/stat.h>
+#include <asm/unistd.h>
+#include <stdint.h>
+#include <synoacl.h>
+#include <synosdk/file.h>
+#define MODE_WRITEALL			(S_IWUSR | S_IWGRP | S_IWOTH)
+#define ATTR_LOCK				(ATTRBIT_NOWRITE | ATTRBIT_NORENAME | ATTRBIT_NODELETE)
+#define FILEI_ATTROFF(ad)		(ad_entry(ad, ADEID_FILEI) + FILEIOFF_ATTR)
+#define AFPFILEI_ATTROFF(ad)	(ad_entry(ad, ADEID_AFPFILEI) + AFPFILEIOFF_ATTR)
+#define FINDERI_ATTROFF(ad)		(ad_entry(ad, ADEID_FINDERI) + FINDERINFO_FRFLAGOFF)
+
+#define SYNO_SMBATTR_HIDE	1<<0
+#define SYNO_SMBATTR_RO		1<<1
+
+void synoSmbAttrGet(const char *filename, struct adouble *ad)
+{
+	SYNOSTAT stOrig;
+	BZERO_STRUCT(stOrig);
+
+	if (!ad) {
+		goto END;
+	}
+	ad->ad_smb_attr = 0;
+	if (NULL == filename || '\0' == filename[0]) {
+		goto END;
+	} else if (0 != SLIBCFileStat(filename, SYNOST_STAT | SYNOST_ARBIT, &stOrig)) {
+		LOG(log_warning, logtype_default, "[%s] not exist! %m", filename);
+		goto END;
+	}
+	// check hidden bit
+	if (stOrig.ext.archBit & S2_SMB_HIDDEN) {
+		ad->ad_smb_attr |= (SYNO_SMBATTR_HIDE);
+	}
+	// check ReadOnly
+	#ifdef MY_ABC_HERE
+	if (SYNOACLIsSupport(filename, -1, SYNO_ACL_IS_FILE_SUPPORT)) {
+		if (stOrig.ext.archBit & S2_SMB_READONLY) {
+			ad->ad_smb_attr |= (SYNO_SMBATTR_RO);
+		}
+	} else 
+	#endif
+	if (!(stOrig.st.st_mode & (MODE_WRITEALL))) {
+		ad->ad_smb_attr |= (SYNO_SMBATTR_RO);
+	}
+	ad->ad_smb_over = 1;
+END:
+	return;
+}
+
+static void synoSmbAttrSet(const char *filename, int smbattr)
+{
+	struct stat stOrig;
+	if (NULL == filename || '\0' == filename[0]) {
+		goto END;
+	} else if (0 != stat(filename, &stOrig)) {
+		LOG(log_warning, logtype_default, "[%s] not exist! %m", filename);
+		goto END;
+	}
+
+	// sync SMB's hidden bit
+	if (smbattr & (SYNO_SMBATTR_HIDE)) {
+		SYNOArchiveBit(filename, F_SETSMB_HIDDEN);
+	} else {
+		SYNOArchiveBit(filename, F_CLRSMB_HIDDEN);
+	}
+
+	// sync SMB's ReadOnly
+	#ifdef MY_ABC_HERE
+	if (SYNOACLIsSupport(filename, -1, SYNO_ACL_IS_FILE_SUPPORT)) {
+		if (smbattr & (SYNO_SMBATTR_RO)) {
+			SYNOArchiveBit(filename, F_SETSMB_READONLY);
+		} else {
+			SYNOArchiveBit(filename, F_CLRSMB_READONLY);
+		}
+	} else
+	#endif
+	if (smbattr & (SYNO_SMBATTR_RO)) {
+		if (0 != chmod(filename, stOrig.st_mode & ~(MODE_WRITEALL))) {
+			LOG(log_warning, logtype_default, "Fail to set mod of %s. %m", filename);
+		}
+	} else {
+		if (0 != chmod(filename, stOrig.st_mode | (MODE_WRITEALL))) {
+			LOG(log_warning, logtype_default, "Fail to set mod of %s. %m", filename);
+		}
+	}
+
+END:
+	return;
+}
+#endif /* MY_ABC_HERE */
+#ifdef MY_ABC_HERE
+static void synoGetXATTR(const struct adouble *ad, u_int16_t *flags)
+{
+	ssize_t xattr_len = 0;
+	char xattr_data[32] = {0};
+
+	memset(flags, 0, sizeof(*flags));
+	xattr_len = getxattr(ad->ad_df_path, SZ_XATTR_FINDERINFO, xattr_data, sizeof(xattr_data));
+	if (0 < xattr_len) {
+		memcpy(flags, xattr_data + FINDERINFO_FRFLAGOFF, sizeof(*flags));
+	} else if (0 > xattr_len) {
+		LOG(log_warning, logtype_default, "%m, Fail to get xattr of [%s]!", ad->ad_df_path);
+	}
+}
+#endif
+int ad_getattr(struct adouble *ad, u_int16_t *attr)
 {
     u_int16_t fflags;
     *attr = 0;
@@ -27,8 +139,18 @@ int ad_getattr(const struct adouble *ad, u_int16_t *attr)
     }
 #if AD_VERSION == AD_VERSION2
     else if (ad->ad_version == AD_VERSION2) {
-        if (ad_getentryoff(ad, ADEID_AFPFILEI)) {
+#ifdef MY_ABC_HERE
+        if (ad_getentryoff(ad, ADEID_AFPFILEI) && ad_getentryoff(ad, ADEID_FINDERI)) {
             memcpy(attr, ad_entry(ad, ADEID_AFPFILEI) + AFPFILEIOFF_ATTR, 2);
+		}
+		if (ad_getentryoff(ad, ADEID_FINDERI)) 
+#else
+        if (ad_getentryoff(ad, ADEID_AFPFILEI))
+#endif
+		{
+#ifndef MY_ABC_HERE
+            memcpy(attr, ad_entry(ad, ADEID_AFPFILEI) + AFPFILEIOFF_ATTR, 2);
+#endif
 
             /* Now get opaque flags from FinderInfo */
             memcpy(&fflags, ad_entry(ad, ADEID_FINDERI) + FINDERINFO_FRFLAGOFF, 2);
@@ -46,6 +168,20 @@ int ad_getattr(const struct adouble *ad, u_int16_t *attr)
                 else
                     *attr &= htons(~ATTRBIT_MULTIUSER);
             }
+	#ifdef MY_ABC_HERE
+			// FIXME hfsplus also support this ? should we just skip the following ?
+			if (0 == ad->ad_smb_over) {
+				synoSmbAttrGet(ad->ad_df_path, ad);
+			}
+			if ((ad->ad_smb_attr & (SYNO_SMBATTR_HIDE)) || (*attr & htons(ATTRBIT_INVISIBLE))) {
+				*attr |= htons(ATTRBIT_INVISIBLE);
+				*FINDERI_ATTROFF(ad) |= htons(FINDERINFO_INVISIBLE);
+			}
+			if ((ad->ad_smb_attr & (SYNO_SMBATTR_RO)) || (*attr & htons(ATTR_LOCK))) {
+				*attr |= htons(ATTR_LOCK);
+				*AFPFILEI_ATTROFF(ad) |= htons(ATTR_LOCK);
+			}
+	#endif
         }
     }
 #endif
@@ -57,10 +193,34 @@ int ad_getattr(const struct adouble *ad, u_int16_t *attr)
     return 0;
 }
 
+#ifdef MY_ABC_HERE
+static void synoSetXATTR(const struct adouble *ad, u_int16_t flags)
+{
+	ssize_t xattr_len = 0;
+	char xattr_data[32] = {0};
+
+	xattr_len = getxattr(ad->ad_df_path, SZ_XATTR_FINDERINFO, xattr_data, sizeof(xattr_data));
+	if (0 >= xattr_len) {
+		LOG(log_error, logtype_default, "%m, Fail to get xattr of [%s]!", ad->ad_df_path);
+		return;
+	}
+
+	memcpy(xattr_data + FINDERINFO_FRFLAGOFF, &flags, sizeof(flags));
+	if (0 > setxattr(ad->ad_df_path, SZ_XATTR_FINDERINFO, xattr_data, sizeof(xattr_data), 0)) {
+		LOG(log_error, logtype_default, "%m, Fail to get xattr of [%s]!", ad->ad_df_path);
+		return;
+	}
+
+	sync();
+}
+#endif
 /* ----------------- */
 int ad_setattr(const struct adouble *ad, const u_int16_t attribute)
 {
     uint16_t fflags;
+#ifdef MY_ABC_HERE
+	int smbattr = 0;
+#endif
 
     /* we don't save open forks indicator */
     u_int16_t attr = attribute & ~htons(ATTRBIT_DOPEN | ATTRBIT_ROPEN);
@@ -80,6 +240,10 @@ int ad_setattr(const struct adouble *ad, const u_int16_t attribute)
     else if (ad->ad_version == AD_VERSION2) {
         if (ad_getentryoff(ad, ADEID_AFPFILEI) && ad_getentryoff(ad, ADEID_FINDERI)) {
             memcpy(ad_entry(ad, ADEID_AFPFILEI) + AFPFILEIOFF_ATTR, &attr, sizeof(attr));
+#ifdef MY_ABC_HERE
+		}
+        if (ad_getentryoff(ad, ADEID_FINDERI)) {
+#endif
             
             /* Now set opaque flags in FinderInfo too */
             memcpy(&fflags, ad_entry(ad, ADEID_FINDERI) + FINDERINFO_FRFLAGOFF, 2);
@@ -96,6 +260,11 @@ int ad_setattr(const struct adouble *ad, const u_int16_t attribute)
                     fflags &= htons(~FINDERINFO_ISHARED);
 
             memcpy(ad_entry(ad, ADEID_FINDERI) + FINDERINFO_FRFLAGOFF, &fflags, 2);
+#ifdef MY_ABC_HERE
+			smbattr |= (attr & htons(ATTRBIT_INVISIBLE)) ? (SYNO_SMBATTR_HIDE) : 0;
+			smbattr |= (attr & htons(ATTR_LOCK)) ? (SYNO_SMBATTR_RO) : 0;
+			synoSmbAttrSet(ad->ad_df_path, smbattr);
+#endif
         }
     }
 #endif

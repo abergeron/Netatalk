@@ -299,7 +299,11 @@ int ad_fcntl_lock(struct adouble *ad, const u_int32_t eid, const int locktype,
     else {
       /* we really want the resource fork it's a byte lock */
       adf = &ad->ad_resource_fork;
+#ifdef MY_ABC_HERE
+      lock.l_start += ad_getentryoff_hfs(ad, eid);
+#else
       lock.l_start += ad_getentryoff(ad, eid);
+#endif
     }
   }
   /* NOTE: we can't write lock a read-only file. on those, we just
@@ -559,7 +563,11 @@ int ad_fcntl_tmplock(struct adouble *ad, const u_int32_t eid, const int locktype
      * so if the file is open by somebody else it fails
     */
     if (!(type & ADLOCK_FILELOCK))
+#ifdef MY_ABC_HERE
+        lock.l_start += ad_getentryoff_hfs(ad, eid);
+#else
         lock.l_start += ad_getentryoff(ad, eid);
+#endif
   }
 
   if (!(adf->adf_flags & O_RDWR) && (type & ADLOCK_WR)) {
@@ -615,7 +623,11 @@ int ad_excl_lock(struct adouble *ad, const u_int32_t eid)
     adf = &ad->ad_data_fork;
   } else {
     adf = &ad->ad_resource_fork;
+#ifdef MY_ABC_HERE
+    lock.l_start = ad_getentryoff_hfs(ad, eid);
+#else
     lock.l_start = ad_getentryoff(ad, eid);
+#endif
   }
   
   err = set_lock(adf->adf_fd, F_SETLK, &lock);
@@ -633,10 +645,15 @@ void ad_fcntl_unlock(struct adouble *ad, const int fork)
   if (ad_reso_fileno(ad) != -1) {
     adf_unlock(&ad->ad_resource_fork, fork);
   }
-
+#ifdef MY_ABC_HERE
+  if (!AD_IS_SYNCXATTR(ad) && ad->ad_flags != AD_VERSION1_SFM) {
+    return;
+  }
+#else
   if (ad->ad_flags != AD_VERSION1_SFM) {
     return;
   }
+#endif
   if (ad_meta_fileno(ad) != -1) {
     adf_unlock(&ad->ad_metadata_fork, fork);
   }
