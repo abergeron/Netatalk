@@ -116,6 +116,15 @@
 
 #define ADEDOFF_RFORK_V2     (ADEDOFF_PRIVID + ADEDLEN_PRIVID)
 
+/* DAVE offsets */
+#define ADEDOFF_NAME_DAVE       (AD_HEADER_LEN + ADEID_NUM_DAVE * AD_ENTRY_LEN)
+#define ADEDOFF_COMMENT_DAVE    (ADEDOFF_NAME_DAVE + ADEDLEN_NAME_DAVE)
+#define ADEDOFF_FILEDATESI_DAVE (ADEDOFF_COMMENT_DAVE + ADEDLEN_COMMENT_DAVE + 1) /* 1 byte padding from the comment */
+#define ADEDOFF_FINDERI_DAVE    (ADEDOFF_FILEDATESI_DAVE + ADEDLEN_FILEDATESI)
+#define ADEDOFF_MACFILEI_DAVE   (ADEDOFF_FINDERI_DAVE + ADEDLEN_FINDERI)
+#define ADEDOFF_RFORK_DAVE      (ADEDOFF_MACFILEI_DAVE + ADEDLEN_MACFILEI)
+
+
 #define ADEID_NUM_OSX        2
 #define ADEDOFF_FINDERI_OSX  (AD_HEADER_LEN + ADEID_NUM_OSX*AD_ENTRY_LEN)
 #define ADEDOFF_RFORK_OSX    (ADEDOFF_FINDERI_OSX + ADEDLEN_FINDERI)
@@ -200,6 +209,16 @@ static const struct entry entry_order_sfm[ADEID_NUM_SFM +1] = {
     {ADEID_SFMRESERVE2, 16+32,      6},                 /* 21 */
     {ADEID_FILEI,       60,         ADEDLEN_FILEI},     /* 7 */
 
+    {0, 0, 0}
+};
+
+static const struct entry entry_order_dave[] = {
+    {ADEID_NAME, ADEDOFF_NAME_DAVE, ADEDLEN_NAME_DAVE},
+    {ADEID_COMMENT, ADEDOFF_COMMENT_DAVE, ADEDLEN_COMMENT_DAVE},
+    {ADEID_FILEDATESI, ADEDOFF_FILEDATESI_DAVE, ADEDLEN_FILEDATESI},
+    {ADEID_FINDERI, ADEDOFF_FINDERI_DAVE, ADEDLEN_FINDERI},
+    {ADEID_MACFILEI, ADEDOFF_MACFILEI_DAVE, ADEDLEN_MACFILEI},
+    {ADEID_RFORK, ADEDOFF_RFORK_DAVE, ADEDLEN_INIT},
     {0, 0, 0}
 };
 
@@ -852,6 +871,68 @@ static int ad_mkrf_osx(char *path _U_)
     return 0;
 }
 
+/**************************************
+ * DAVE adouble functions
+ **************************************/
+static char *ad_path_dave(const char *path, int adflags _U_)
+{
+    static char pathbuf[MAXPATHLEN];
+    const char *slash, *prevslash = NULL;
+    size_t  len; 
+    int slash_at_end;
+
+    if ((path == NULL)
+        || ((len = strlen(path)) < 1)
+        || (len >= MAXPATHLEN))
+        return NULL;
+
+    if (path[len - 1] == '/')
+        /* eg path is "dir/" */
+        slash_at_end = 1;
+    else
+        slash_at_end = 0;
+
+    slash = strrchr(path, '/');
+    if (slash)
+        prevslash = strrchr(slash, '/');
+
+    /*
+     * here we have a path with a slash like "file", "dir/", "dir/file" or "topdir/dir/"
+     *                                                 sae slash prevslash
+     * 1) "file"        -> "ressource.frk/file"        0   0     0
+     * 2) "dir/"        -> "ressource.frk/dir"         1   1     0
+     * 3) "dir/file"    -> "dir/ressource.frk/file"    0   1     0
+     * 4) "topdir/dir/" -> "topdir/ressource.frk/dir"  1   1     1
+     */
+
+    if (!prevslash && ((!slash_at_end && !slash) || (slash_at_end && slash))) {
+        /* 1) or 2) */
+        if (strlcpy(pathbuf, AD_DAVE_FOLDER_NAME, MAXPATHLEN) >= MAXPATHLEN)
+            return NULL;
+        if (strlcat(pathbuf, path, MAXPATHLEN) >= MAXPATHLEN)
+            return NULL;
+        return pathbuf;
+    } else {
+        /* 3) or 4) */
+        strncpy(pathbuf, path, (prevslash ? prevslash - path : slash - path) + 1);
+        if (strlcpy(pathbuf, AD_DAVE_FOLDER_NAME, MAXPATHLEN) >= MAXPATHLEN)
+            return NULL;
+        if (strlcat(pathbuf, (prevslash ? prevslash : slash) + 1, MAXPATHLEN) >= MAXPATHLEN)
+            return NULL;
+    }
+
+    if (slash_at_end)
+        pathbuf[strlen(pathbuf) - 1 ] = '\0';
+    
+    return pathbuf;
+}
+
+static int ad_mkrf_dave(char *path _U_)
+{
+    return 0;
+}
+
+
 /* ---------------------------------------
  * Put the .AppleDouble where it needs to be:
  *
@@ -1123,6 +1204,14 @@ static int ad_check_size(struct adouble *ad _U_, struct stat *st)
 }
 
 /* --------------------------- */
+static int ad_check_size_dave(struct adouble *ad _U_, struct stat *st)
+{
+    if (st->st_size > 0 && st->st_size < AD_DATASZ_DAVE)
+        return 1;
+    return 0;
+}
+
+/* --------------------------- */
 static int ad_check_size_sfm(struct adouble *ad _U_, struct stat *st)
 {
     if (st->st_size > 0 && st->st_size < AD_SFM_LEN)
@@ -1169,6 +1258,16 @@ static struct adouble_fops ad_sfm = {
     &ad_header_upgrade_none,
 };
 
+static struct adouble_fops ad_dave = {
+    &ad_path_dave,
+    &ad_mkrf_dave,
+    &ad_rebuild_adouble_header,
+    &ad_check_size_dave,
+
+    &ad_header_read,
+    &ad_header_upgrade_none,
+};
+
 static struct adouble_fops ad_adouble = {
     &ad_path,
     &ad_mkrf,
@@ -1191,6 +1290,10 @@ void ad_init(struct adouble *ad, int flags, int options)
     else if (flags == AD_VERSION1_SFM) {
         ad->ad_ops = &ad_sfm;
         ad->ad_md = &ad->ad_metadata_fork;
+    }
+    else if (flags == AD_VERSION2_DAVE) {
+        ad->ad_ops = &ad_dave;
+        ad->ad_md = &ad->ad_resource_fork;
     }
     else {
         ad->ad_ops = &ad_adouble;

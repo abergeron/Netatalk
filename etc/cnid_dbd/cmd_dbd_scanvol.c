@@ -34,6 +34,8 @@
 #include <atalk/ea.h>
 #include <atalk/util.h>
 #include <atalk/acl.h>
+#include <atalk/logger.h>
+#include <atalk/errchk.h>
 
 #include "cmd_dbd.h"
 #include "dbif.h"
@@ -156,6 +158,200 @@ static char *mtoupath(char *mpath)
     return( upath );
 }
 
+static int write_all(int dfd, const void *buf, size_t buflen)
+{
+    ssize_t cc;
+
+    while (buflen > 0) {
+        if ((cc = write(dfd, buf, buflen)) < 0) {
+            switch (errno) {
+            case EINTR:
+                continue;
+            default:
+                return -1;
+            }
+        }
+        buflen -= cc;
+    }
+    return 0;
+}
+
+static int copy_fork(int eid, struct adouble *add, struct adouble *ads)
+{
+    ssize_t cc;
+    int     err = 0;
+    char    filebuf[8192 * 8];
+    int     sfd, dfd;
+    
+    if (eid == ADEID_DFORK) {
+        sfd = ad_data_fileno(ads);
+        dfd = ad_data_fileno(add);
+    } else {
+        sfd = ad_reso_fileno(ads);
+        dfd = ad_reso_fileno(add);
+    }        
+
+    if ((off_t)-1 == lseek(sfd, ad_getentryoff(ads, eid), SEEK_SET))
+    	return -1;
+
+    if ((off_t)-1 == lseek(dfd, ad_getentryoff(add, eid), SEEK_SET))
+    	return -1;
+
+    while (1) {
+        if ((cc = read(sfd, filebuf, sizeof(filebuf))) < 0) {
+            if (errno == EINTR)
+                continue;
+            err = -1;
+            break;
+        }
+
+        if (!cc || ((err = write_all(dfd, filebuf, cc)) < 0)) {
+            break;
+        }
+    }
+    return err;
+}
+
+static int delete_addir(void)
+{
+    EC_INIT;
+    int              cwd_fd = -1,
+                     ad_fd  = -1;
+    DIR             *dp     = NULL;
+    struct dirent   *ep;
+
+    EC_NEG1_LOG( cwd_fd = open(".", O_RDONLY) );
+    EC_ZERO_LOG( chdir("resource.frk/.AppleDouble") );
+
+    EC_NULL_LOG( dp = opendir(".") );
+
+    while ((ep = readdir(dp))) {
+        if (STRCMP(ep->d_name, ==, ".") || STRCMP(ep->d_name, ==, ".."))
+            continue;
+        EC_ZERO_LOG( unlink(ep->d_name) );
+        dbd_log(LOGSTD, "Deleted nested AppleDouble file: %s/ressoure.frk/.AppleDouble/%s", cwdbuf, ep->d_name);
+    }
+
+    fchdir(cwd_fd);
+    close(cwd_fd);
+    cwd_fd = -1;
+
+    EC_ZERO_LOGSTR( rmdir("resource.frk/.AppleDouble"),
+                    "rmdir %s/resource.frk/.AppleDouble/: %s",
+                    cwdbuf, strerror(errno) );
+
+    dbd_log(LOGSTD, "Deleted nested AppleDouble directory: %s/ressoure.frk/.AppleDouble/", cwdbuf);
+
+EC_CLEANUP:
+    if (cwd_fd != -1) {
+        fchdir(cwd_fd);
+        close(cwd_fd);
+    }
+    if (dp)
+        closedir(dp);
+    EC_EXIT;
+}
+
+static int convert_dave_fn(const char *name, const char *davepath)
+{
+    EC_INIT;
+    struct stat      data_sb,
+                     dave_sb;
+    struct adouble   ad_dave, ad_v2;
+    int              ad_dave_open = 0,
+                     ad_v2_open = 0;
+
+    EC_ZERO_LOG( lstat(davepath, &dave_sb) );
+    if (lstat(name, &data_sb) != 0) {
+        if (errno == ENOENT) {
+            unlink(davepath);
+            goto EC_CLEANUP;
+        }
+        dbd_log(LOGSTD, "lstat %s/%s: %s", cwdbuf, davepath, strerror(errno));
+        EC_FAIL;
+    }
+
+
+    int adflags = (S_ISREG(data_sb.st_mode)) ? 0 : ADFLAGS_DIR;
+
+    switch (dave_sb.st_mode & S_IFMT) {
+    case S_IFREG:
+        break;
+    case S_IFDIR:
+        if (STRCMP(name, ==, ".AppleDouble"))
+            if (delete_addir() == 0)
+                goto EC_CLEANUP;
+        EC_FAIL;
+    default:
+        dbd_log(LOGSTD, "unsupport filetype %04o: %s/%s", (int)dave_sb.st_mode, cwdbuf, davepath);
+    }
+
+    ad_init(&ad_dave, AD_VERSION2_DAVE, myvolinfo->v_ad_options);
+    if (ad_open(name, ADFLAGS_MD, O_RDONLY, 0, &ad_dave) != 0) {
+        dbd_log(LOGSTD, "Couldn't open DAVE resource %s/%s", cwdbuf, davepath);
+        unlink(davepath);
+        goto EC_CLEANUP;
+    }
+    ad_dave_open = 1;
+
+    ad_init(&ad_v2, myvolinfo->v_adouble, myvolinfo->v_ad_options);
+    if (ad_open(name, ADFLAGS_MD | adflags, O_CREAT | O_RDWR, 0666, &ad_v2) != 0) {
+        dbd_log(LOGSTD, "Couldn't open AppleDouble file of %s/%s", cwdbuf, name);
+        EC_FAIL;
+    }
+    ad_v2_open = 1;
+
+    EC_ZERO_LOG( ad_copy_header(&ad_v2, &ad_dave) );
+    EC_ZERO_LOG( ad_flush(&ad_v2) );
+    EC_ZERO_LOG( copy_fork(ADEID_RFORK, &ad_v2, &ad_dave) );
+    EC_ZERO_LOG( chown(myvolinfo->ad_path(name, adflags), data_sb.st_uid, data_sb.st_gid) );
+    EC_ZERO_LOG( unlink(davepath) );
+
+    dbd_log(LOGSTD, "Converted DAVE resource \"%s/%s\"", cwdbuf, davepath);
+
+EC_CLEANUP:
+    if (ad_dave_open)
+        ad_close_metadata(&ad_dave);
+    if (ad_v2_open)
+        ad_close_metadata(&ad_v2);
+    EC_EXIT;
+}
+
+static int convert_dave_dir(void)
+{
+    EC_INIT;
+    DIR             *dp = NULL;
+    struct dirent   *ep;
+    char             pathbuf[MAXPATHLEN] = "resource.frk/";
+
+    if ((dp = opendir(DAVE_RESODIRNAME)) == NULL) {
+        dbd_log(LOGSTD, "Couldn't open DAVE resource directory %s/%s: %s",
+                cwdbuf, DAVE_RESODIRNAME, strerror(errno));
+        return -1;
+    }
+
+    while ((ep = readdir(dp))) {
+        if (strcmp(ep->d_name, ".") == 0 || strcmp(ep->d_name, "..") == 0)
+            continue;
+        if (strlcpy(pathbuf + strlen("resource.frk/"), ep->d_name, MAXPATHLEN) >= MAXPATHLEN) {
+            dbd_log(LOGSTD, "Buffer overflow %s/%s",
+                    cwdbuf, pathbuf);
+            continue;
+        }
+        if (convert_dave_fn(ep->d_name, pathbuf) != 0)
+            EC_FAIL;
+    }
+
+    EC_ZERO_LOGSTR( rmdir("resource.frk"), "%s/resource.frk: %s", cwdbuf, strerror(errno) );
+
+    dbd_log(LOGSTD, "Removed DAVE resource dir \"%s/resource.frk/\"", cwdbuf);
+
+EC_CLEANUP:
+    if (dp)
+        closedir(dp);
+    EC_EXIT;
+}
+
 #if 0
 /* 
    Check if "name" is pointing to
@@ -243,6 +439,9 @@ static int check_name_encoding(char *uname)
 {
     char *roundtripped;
 
+    if (dbd_flags & DBD_FLAGS_CONVDAVE)
+        return 0;
+
     roundtripped = mtoupath(utompath(uname));
     if (!roundtripped) {
         dbd_log( LOGSTD, "Error checking encoding for '%s/%s'", cwdbuf, uname);
@@ -296,7 +495,7 @@ static int check_adfile(const char *fname, const struct stat *st)
     struct adouble ad;
     char *adname;
 
-    if (dbd_flags & DBD_FLAGS_CLEANUP)
+    if (dbd_flags & (DBD_FLAGS_CLEANUP | DBD_FLAGS_CONVDAVE))
         return 0;
 
     if (S_ISREG(st->st_mode))
@@ -462,7 +661,7 @@ static int check_addir(int volroot)
     struct adouble ad;
     char *mname = NULL;
 
-    if (dbd_flags & DBD_FLAGS_CLEANUP)
+    if (dbd_flags & (DBD_FLAGS_CLEANUP | DBD_FLAGS_SCAN | DBD_FLAGS_CONVDAVE))
         return 0;
 
     /* Check for ad-dir */
@@ -595,6 +794,9 @@ static int read_addir(void)
     struct dirent *ep;
     struct stat st;
 
+    if (dbd_flags & (DBD_FLAGS_SCAN | DBD_FLAGS_CONVDAVE))
+        return 0;
+
     if ((chdir(ADv2_DIRNAME)) != 0) {
         dbd_log(LOGSTD, "Couldn't chdir to '%s/%s': %s",
                 cwdbuf, ADv2_DIRNAME, strerror(errno));
@@ -679,6 +881,9 @@ static cnid_t check_cnid(const char *name, cnid_t did, struct stat *st, int adfi
     int ret;
     cnid_t db_cnid, ad_cnid;
     struct adouble ad;
+
+    if (dbd_flags & DBD_FLAGS_CONVDAVE)
+        return CNID_INVALID;
 
     /* Force checkout every X items */
     static int cnidcount = 0;
@@ -867,16 +1072,12 @@ static int dbd_readdir(int volroot, cnid_t did)
 
     /* Check again for .AppleDouble folder, check_adfile also checks/creates it */
     if ((addir_ok = check_addir(volroot)) != 0)
-        if ( ! (dbd_flags & DBD_FLAGS_SCAN))
-            /* Fatal on rebuild run, continue if only scanning ! */
-            return -1;
+        return -1;
 
     /* Check AppleDouble files in AppleDouble folder, but only if it exists or could be created */
     if (ADDIR_OK)
         if ((read_addir()) != 0)
-            if ( ! (dbd_flags & DBD_FLAGS_SCAN))
-                /* Fatal on rebuild run, continue if only scanning ! */
-                return -1;
+            return -1;
 
     if ((dp = opendir (".")) == NULL) {
         dbd_log(LOGSTD, "Couldn't open the directory: %s",strerror(errno));
@@ -914,6 +1115,12 @@ static int dbd_readdir(int volroot, cnid_t did)
         if ((ret = lstat(ep->d_name, &st)) < 0) {
             dbd_log( LOGSTD, "Lost file while reading dir '%s/%s', probably removed: %s",
                      cwdbuf, ep->d_name, strerror(errno));
+            continue;
+        }
+
+        if (STRCMP(ep->d_name, == , DAVE_RESODIRNAME)) {
+            if (convert_dave_dir() != 0)
+                return -1;
             continue;
         }
         
@@ -1010,7 +1217,7 @@ static int dbd_readdir(int volroot, cnid_t did)
         /**************************************************************************
           Recursion
         **************************************************************************/
-        if (S_ISDIR(st.st_mode) && (cnid || nocniddb)) { /* If we have no cnid for it we cant recur */
+        if (S_ISDIR(st.st_mode)) {
             strcat(cwdbuf, "/");
             strcat(cwdbuf, ep->d_name);
             dbd_log( LOGDEBUG, "Entering directory: %s", cwdbuf);
@@ -1210,13 +1417,15 @@ int cmd_dbd_scanvol(DBD *dbd_ref, struct volinfo *vi, dbd_flags_t flags)
         return -1;
     }
 
-    /* Get volume stamp */
-    dbd_getstamp(dbd, &rqst, &rply);
-    if (rply.result != CNID_DBD_RES_OK) {
-        ret = -1;
-        goto exit;
+    if (!nocniddb) {
+        /* Get volume stamp */
+        dbd_getstamp(dbd, &rqst, &rply);
+        if (rply.result != CNID_DBD_RES_OK) {
+            ret = -1;
+            goto exit;
+        }
+        memcpy(stamp, rply.name, CNID_DEV_LEN);
     }
-    memcpy(stamp, rply.name, CNID_DEV_LEN);
 
     /* temporary rebuild db, used with -re rebuild to delete unused CNIDs, not used with -f */
     if (! nocniddb && (flags & DBD_FLAGS_EXCL) && !(flags & DBD_FLAGS_FORCE)) {

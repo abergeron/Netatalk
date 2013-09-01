@@ -68,6 +68,7 @@
 #include <signal.h>
 #include <string.h>
 #include <errno.h>
+#include <getopt.h>
 
 #include <atalk/logger.h>
 #include <atalk/cnid_dbd_private.h>
@@ -82,6 +83,7 @@
 #define DBOPTIONS (DB_CREATE | DB_INIT_LOCK | DB_INIT_LOG | DB_INIT_MPOOL | DB_INIT_TXN)
 
 int nocniddb = 0;               /* Dont open CNID database, only scan filesystem */
+int convert_dave = 0;           /* Convert DAVE AppleDouble to Netatalk */
 struct volinfo volinfo; /* needed by pack.c:idxname() */
 volatile sig_atomic_t alarmed;  /* flags for signals */
 int db_locked;                  /* have we got the fcntl lock on lockfile ? */
@@ -171,7 +173,7 @@ static void set_signal(void)
 static void usage (void)
 {
     printf("dbd (Netatalk %s)\n"
-           "Usage: dbd [-e|-t|-v|-x] -d [-i] | -s [-c|-n]| -r [-c|-f] | -u <path to netatalk volume>\n"
+           "Usage: dbd {-d | -s | -r | --convert-dave} [-cefintv] <path to netatalk volume>\n"
            "dbd can dump, scan, reindex and rebuild Netatalk dbd CNID databases.\n"
            "dbd must be run with appropiate permissions i.e. as root.\n\n"
            "Main commands are:\n"
@@ -201,12 +203,10 @@ static void usage (void)
            "               -f wipe database and rebuild from IDs stored in AppleDouble\n"
            "                  files, only available for volumes without 'nocnidcache'\n"
            "                  option. Implies -e.\n\n"
-           "   -u Upgrade:\n"
-           "      Opens the database which triggers any necessary upgrades,\n"
-           "      then closes and exits.\n\n"
+           "   --convert-dave\n"
+           "      Convert DAVE AppleDouble format to Netatalk\n\n"
            "General options:\n"
            "   -e only work on inactive volumes and lock them (exclusive)\n"
-           "   -x rebuild indexes (just for completeness, mostly useless!)\n"
            "   -t show statistics while running\n"
            "   -v verbose\n\n"
            "WARNING:\n"
@@ -215,6 +215,22 @@ static void usage (void)
            , VERSION
         );
 }
+
+static struct option longopts[] = {
+    { "cleanup",           no_argument,  NULL,           'c' },
+    { "dump",              no_argument,  NULL,           'd' },
+    { "exclusive",         no_argument,  NULL,           'e' },
+    { "force",             no_argument,  NULL,           'f' },
+    { "dumpindexes",       no_argument,  NULL,           'i' },
+    { "nocniddb",          no_argument,  NULL,           'n' },
+    { "rebuild",           no_argument,  NULL,           'r' },
+    { "scan",              no_argument,  NULL,           's' },
+    { "stats",             no_argument,  NULL,           't' },
+    { "prepare-upgrade",   no_argument,  NULL,           'u' },
+    { "verbose",           no_argument,  NULL,           'v' },
+    { "convert-dave",      no_argument,  &convert_dave,  1   },
+    { NULL,                0,            NULL,           0   }
+};
 
 int main(int argc, char **argv)
 {
@@ -231,7 +247,7 @@ int main(int argc, char **argv)
     /* Inhereting perms in ad_mkdir etc requires this */
     ad_setfuid(0);
 
-    while ((c = getopt(argc, argv, ":cdefinrstuvx")) != -1) {
+    while ((c = getopt_long(argc, argv, ":cdefinrstuv", longopts, NULL)) != -1) {
         switch(c) {
         case 'c':
             flags |= DBD_FLAGS_CLEANUP;
@@ -265,13 +281,12 @@ int main(int argc, char **argv)
             exclusive = 1;
             flags |= DBD_FLAGS_EXCL;
             break;
-        case 'x':
-            rebuildindexes = 1;
-            break;
         case 'f':
             force = 1;
             exclusive = 1;
             flags |= DBD_FLAGS_FORCE | DBD_FLAGS_EXCL;
+            break;
+        case 0:
             break;
         case ':':
         case '?':
@@ -281,7 +296,7 @@ int main(int argc, char **argv)
         }
     }
 
-    if ((dump + scan + rebuild + prep_upgrade) != 1) {
+    if ((dump + scan + rebuild + prep_upgrade + convert_dave) != 1) {
         usage();
         exit(EXIT_FAILURE);
     }
@@ -309,94 +324,105 @@ int main(int argc, char **argv)
     else
         setuplog("default log_debug /dev/tty");
 
-    /* Load .volinfo file */
-    if (loadvolinfo(volpath, &volinfo) == -1) {
-        dbd_log( LOGSTD, "Not a Netatalk volume at '%s', no .volinfo file at '%s/.AppleDesktop/.volinfo' or unknown volume options", volpath, volpath);
-        exit(EXIT_FAILURE);
-    }
-    if (vol_load_charsets(&volinfo) == -1) {
-        dbd_log( LOGSTD, "Error loading charsets!");
-        exit(EXIT_FAILURE);
-    }
+    if (convert_dave) {
+        dbd_log( LOGSTD, "Converting from DAVE");
+        flags |= DBD_FLAGS_CONVDAVE;
+        nocniddb = 1;
+        volinfo.v_adouble = AD_VERSION2;
+        volinfo.v_vfs_ea = AFPVOL_EA_SYS;
+        volinfo.v_path = strdup(volpath);
+        volinfo.v_volcharset = CH_UTF8;
+        volinfo.ad_path = ad_path;
+    } else {
+        if (loadvolinfo(volpath, &volinfo) == -1) {
+            dbd_log( LOGSTD, "Not a Netatalk volume at '%s', no .volinfo file at '%s/.AppleDesktop/.volinfo' or unknown volume options", volpath, volpath);
+            exit(EXIT_FAILURE);
+        }
 
-    /* Sanity checks to ensure we can touch this volume */
-    if (volinfo.v_vfs_ea != AFPVOL_EA_AD && volinfo.v_vfs_ea != AFPVOL_EA_SYS) {
-        dbd_log( LOGSTD, "Unknown Extended Attributes option: %u", volinfo.v_vfs_ea);
-        exit(EXIT_FAILURE);        
-    }
+        if (vol_load_charsets(&volinfo) == -1) {
+            dbd_log( LOGSTD, "Error loading charsets!");
+            exit(EXIT_FAILURE);
+        }
 
-    /* Enuser dbpath is there, create if necessary */
-    struct stat st;
-    if (stat(volinfo.v_dbpath, &st) != 0) {
-        if (errno != ENOENT) {
-            dbd_log( LOGSTD, "Can't stat dbpath \"%s\": %s", volinfo.v_dbpath, strerror(errno));
+        /* Sanity checks to ensure we can touch this volume */
+        if (volinfo.v_vfs_ea != AFPVOL_EA_AD && volinfo.v_vfs_ea != AFPVOL_EA_SYS) {
+            dbd_log( LOGSTD, "Unknown Extended Attributes option: %u", volinfo.v_vfs_ea);
             exit(EXIT_FAILURE);        
         }
-        if ((mkdir(volinfo.v_dbpath, 0755)) != 0) {
-            dbd_log( LOGSTD, "Can't create dbpath \"%s\": %s", dbpath, strerror(errno));
-            exit(EXIT_FAILURE);
-        }        
     }
 
-    /* Put "/.AppleDB" at end of volpath, get path from volinfo file */
-    if ( (strlen(volinfo.v_dbpath) + strlen("/.AppleDB")) > MAXPATHLEN ) {
-        dbd_log( LOGSTD, "Volume pathname too long");
-        exit(EXIT_FAILURE);        
-    }
-    strncpy(dbpath, volinfo.v_dbpath, MAXPATHLEN - strlen("/.AppleDB"));
-    strcat(dbpath, "/.AppleDB");
+    if (!nocniddb) {
+        /* Enuser dbpath is there, create if necessary */
+        struct stat st;
+        if (stat(volinfo.v_dbpath, &st) != 0) {
+            if (errno != ENOENT) {
+                dbd_log( LOGSTD, "Can't stat dbpath \"%s\": %s", volinfo.v_dbpath, strerror(errno));
+                exit(EXIT_FAILURE);        
+            }
+            if ((mkdir(volinfo.v_dbpath, 0755)) != 0) {
+                dbd_log( LOGSTD, "Can't create dbpath \"%s\": %s", dbpath, strerror(errno));
+                exit(EXIT_FAILURE);
+            }
+        }
 
-    /* Check or create dbpath */
-    int dbdirfd = open(dbpath, O_RDONLY);
-    if (dbdirfd == -1 && errno == ENOENT) {
-        if (errno == ENOENT) {
-            if ((mkdir(dbpath, 0755)) != 0) {
-                dbd_log( LOGSTD, "Can't create .AppleDB for \"%s\": %s", dbpath, strerror(errno));
+        /* Put "/.AppleDB" at end of volpath, get path from volinfo file */
+        if ( (strlen(volinfo.v_dbpath) + strlen("/.AppleDB")) > MAXPATHLEN ) {
+            dbd_log( LOGSTD, "Volume pathname too long");
+            exit(EXIT_FAILURE);        
+        }
+        strncpy(dbpath, volinfo.v_dbpath, MAXPATHLEN - strlen("/.AppleDB"));
+        strcat(dbpath, "/.AppleDB");
+
+        /* Check or create dbpath */
+        int dbdirfd = open(dbpath, O_RDONLY);
+        if (dbdirfd == -1 && errno == ENOENT) {
+            if (errno == ENOENT) {
+                if ((mkdir(dbpath, 0755)) != 0) {
+                    dbd_log( LOGSTD, "Can't create .AppleDB for \"%s\": %s", dbpath, strerror(errno));
+                    exit(EXIT_FAILURE);
+                }
+            } else {
+                dbd_log( LOGSTD, "Somethings wrong with .AppleDB for \"%s\", giving up: %s", dbpath, strerror(errno));
                 exit(EXIT_FAILURE);
             }
         } else {
-            dbd_log( LOGSTD, "Somethings wrong with .AppleDB for \"%s\", giving up: %s", dbpath, strerror(errno));
-            exit(EXIT_FAILURE);
+            close(dbdirfd);
         }
-    } else {
-        close(dbdirfd);
-    }
 
-    /* Get db lock */
-    if ((db_locked = get_lock(LOCK_EXCL, dbpath)) == -1)
-        goto exit_noenv;
-    if (db_locked != LOCK_EXCL) {
-        /* Couldn't get exclusive lock, try shared lock if -e wasn't requested */
-        if (exclusive) {
-            dbd_log(LOGSTD, "Database is in use and exlusive was requested");
-            goto exit_noenv;
-        }
-        if ((db_locked = get_lock(LOCK_SHRD, NULL)) != LOCK_SHRD)
-            goto exit_noenv;
-    }
-
-    /* Check if -f is requested and wipe db if yes */
-    if ((flags & DBD_FLAGS_FORCE) && rebuild && (volinfo.v_flags & AFPVOL_CACHE)) {
-        char cmd[8 + MAXPATHLEN];
-        if ((db_locked = get_lock(LOCK_FREE, NULL)) != 0)
-            goto exit_noenv;
-
-        snprintf(cmd, 8 + MAXPATHLEN, "rm -rf \"%s\"", dbpath);
-        dbd_log( LOGDEBUG, "Removing old database of volume: '%s'", volpath);
-        system(cmd);
-        if ((mkdir(dbpath, 0755)) != 0) {
-            dbd_log( LOGSTD, "Can't create dbpath \"%s\": %s", dbpath, strerror(errno));
-            exit(EXIT_FAILURE);
-        }
-        dbd_log( LOGDEBUG, "Removed old database.");
+        /* Get db lock */
         if ((db_locked = get_lock(LOCK_EXCL, dbpath)) == -1)
             goto exit_noenv;
-    }
+        if (db_locked != LOCK_EXCL) {
+            /* Couldn't get exclusive lock, try shared lock if -e wasn't requested */
+            if (exclusive) {
+                dbd_log(LOGSTD, "Database is in use and exlusive was requested");
+                goto exit_noenv;
+            }
+            if ((db_locked = get_lock(LOCK_SHRD, NULL)) != LOCK_SHRD)
+                goto exit_noenv;
+        }
 
-    /* 
-       Lets start with the BerkeleyDB stuff
-    */
-    if ( ! nocniddb) {
+        /* Check if -f is requested and wipe db if yes */
+        if ((flags & DBD_FLAGS_FORCE) && rebuild && (volinfo.v_flags & AFPVOL_CACHE)) {
+            char cmd[8 + MAXPATHLEN];
+            if ((db_locked = get_lock(LOCK_FREE, NULL)) != 0)
+                goto exit_noenv;
+
+            snprintf(cmd, 8 + MAXPATHLEN, "rm -rf \"%s\"", dbpath);
+            dbd_log( LOGDEBUG, "Removing old database of volume: '%s'", volpath);
+            system(cmd);
+            if ((mkdir(dbpath, 0755)) != 0) {
+                dbd_log( LOGSTD, "Can't create dbpath \"%s\": %s", dbpath, strerror(errno));
+                exit(EXIT_FAILURE);
+            }
+            dbd_log( LOGDEBUG, "Removed old database.");
+            if ((db_locked = get_lock(LOCK_EXCL, dbpath)) == -1)
+                goto exit_noenv;
+        }
+
+        /* 
+           Lets start with the BerkeleyDB stuff
+        */
         if ((dbd = dbif_init(dbpath, "cnid2.db")) == NULL)
             goto exit_noenv;
         
@@ -420,14 +446,14 @@ int main(int argc, char **argv)
             (void)dbif_txn_close(dbd, 1);
             goto cleanup;
         }
-    }
 
-    /* Downgrade db lock if not running exclusive */
-    if (!exclusive && (db_locked == LOCK_EXCL)) {
-        if (get_lock(LOCK_UNLOCK, NULL) != 0)
-            goto exit_failure;
-        if (get_lock(LOCK_SHRD, NULL) != LOCK_SHRD)
-            goto exit_failure;
+        /* Downgrade db lock if not running exclusive */
+        if (!exclusive && (db_locked == LOCK_EXCL)) {
+            if (get_lock(LOCK_UNLOCK, NULL) != 0)
+                goto exit_failure;
+            if (get_lock(LOCK_SHRD, NULL) != LOCK_SHRD)
+                goto exit_failure;
+        }
     }
 
     /* Now execute given command scan|rebuild|dump */
@@ -435,7 +461,7 @@ int main(int argc, char **argv)
         if (dbif_dump(dbd, dumpindexes) < 0) {
             dbd_log( LOGSTD, "Error dumping database");
         }
-    } else if ((rebuild && ! nocniddb) || scan) {
+    } else if ((rebuild && ! nocniddb) || scan || convert_dave) {
         if (cmd_dbd_scanvol(dbd, &volinfo, flags) < 0) {
             dbd_log( LOGSTD, "Error repairing database.");
         }
@@ -443,8 +469,8 @@ int main(int argc, char **argv)
 
 cleanup:
     /* Cleanup */
-    dbd_log(LOGDEBUG, "Closing db");
     if (! nocniddb) {
+        dbd_log(LOGDEBUG, "Closing db");
         if (dbif_close(dbd) < 0) {
             dbd_log( LOGSTD, "Error closing database");
             goto exit_failure;
@@ -455,11 +481,13 @@ exit_success:
     ret = 0;
 
 exit_failure:
-    if (dbif_env_remove(dbpath) < 0) {
-        dbd_log( LOGSTD, "Error removing BerkeleyDB database environment");
-        ret++;
+    if ( ! nocniddb) {
+        if (dbif_env_remove(dbpath) < 0) {
+            dbd_log( LOGSTD, "Error removing BerkeleyDB database environment");
+            ret++;
+        }
+        get_lock(0, NULL);
     }
-    get_lock(0, NULL);
 
 exit_noenv:    
     if ((fchdir(cdir)) < 0)

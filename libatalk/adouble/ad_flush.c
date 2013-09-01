@@ -27,6 +27,7 @@
 
 #include <string.h>
 #include <atalk/adouble.h>
+#include <atalk/util.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -110,21 +111,28 @@ int ad_copy_header(struct adouble *add, struct adouble *ads)
     u_int32_t       len;
 
     for ( eid = 0; eid < ADEID_MAX; eid++ ) {
-        if ( ads->ad_eid[ eid ].ade_off == 0 ) {
+        if (ads->ad_eid[eid].ade_off == 0 || add->ad_eid[eid].ade_off == 0)
+            /* src or dst adouble version doesn't use this entry type */
             continue;
-        }
+        if ((len = ads->ad_eid[eid].ade_len) == 0)
+            /* empty entry */
+            continue;
 
-        if ( add->ad_eid[ eid ].ade_off == 0 ) {
-            continue;
-        }
-
-        len = ads->ad_eid[ eid ].ade_len;
-        if (!len) {
-            continue;
-        }
-
-        if (eid != ADEID_COMMENT && add->ad_eid[ eid ].ade_len != len ) {
-            continue;
+        switch (eid) {
+            /* deal with variable lenght entries (names, comment) vs fixed size (all others) */
+        case ADEID_SHORTNAME:
+            len = MIN(strnlen(ad_entry(ads, eid), ADEDLEN_SHORTNAME), ADEDLEN_SHORTNAME);
+            break;
+        case ADEID_NAME:
+            len = MIN(strnlen(ad_entry(ads, eid), ADEDLEN_NAME), ADEDLEN_NAME);
+            break;
+        case ADEID_COMMENT:
+            len = MIN(strnlen(ad_entry(ads, eid), ADEDLEN_COMMENT), ADEDLEN_COMMENT);
+            break;
+        default:
+            if (add->ad_eid[eid].ade_len != len)
+                continue;
+            break;
         }
 
         ad_setentrylen( add, eid, len );

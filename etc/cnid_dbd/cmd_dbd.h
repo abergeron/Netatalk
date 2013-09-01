@@ -15,8 +15,10 @@ typedef unsigned int dbd_flags_t;
 #define DBD_FLAGS_EXCL     (1 << 2)
 #define DBD_FLAGS_CLEANUP  (1 << 3) /* Dont create AD stuff, but cleanup orphaned */
 #define DBD_FLAGS_STATS    (1 << 4)
+#define DBD_FLAGS_CONVDAVE (1 << 5)
 
 #define ADv2_DIRNAME ".AppleDouble"
+#define DAVE_RESODIRNAME "resource.frk"
 
 #define DIR_DOT_OR_DOTDOT(a) \
         ((strcmp(a, ".") == 0) || (strcmp(a, "..") == 0))

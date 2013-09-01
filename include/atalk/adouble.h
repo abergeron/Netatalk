@@ -64,6 +64,7 @@
 
 #define AD_VERSION2     0x00020000
 #define AD_VERSION2_OSX 0x00020001
+#define AD_VERSION2_DAVE 0x00020002
 /*
   #define AD_VERSION1_ADS 0x00010002
 */
@@ -145,6 +146,11 @@
 
 #define ADEID_NUM_V1            5
 #define ADEID_NUM_V2            13
+#define ADEID_NUM_DAVE          6
+
+/* DAVE field widths in case they differ from ours */
+#define ADEDLEN_NAME_DAVE       32
+#define ADEDLEN_COMMENT_DAVE    201
 
 // #define ADEID_NUM_SFM        5
 /* sizeof SFM meta data */
@@ -168,6 +174,18 @@
 #error bad size for AD_DATASZ2
 #endif
 
+#define AD_DATASZ_DAVE  (AD_HEADER_LEN                      \
+                         + (ADEID_NUM_DAVE * AD_ENTRY_LEN)  \
+                         + ADEDLEN_NAME_DAVE                \
+                         + ADEDLEN_COMMENT_DAVE + 1         \
+                         + ADEDLEN_FILEDATESI               \
+                         + ADEDLEN_FINDERI                  \
+                         + ADEDLEN_MACFILEI)
+
+#if AD_DATASZ_DAVE != 384
+#error bad size for AD_DATASZ_DAVE
+#endif
+
 #define AD_DATASZ_MAX   1024
 #if AD_VERSION == AD_VERSION1
 #define AD_DATASZ   AD_DATASZ1 /* hold enough for the entries */
@@ -188,6 +206,8 @@
 #ifndef ADEDOFF_FILEI
 #define ADEDOFF_FILEI   541
 #endif
+
+#define AD_DAVE_FOLDER_NAME "resource.frk/"
 
 typedef u_int32_t cnid_t;
 
