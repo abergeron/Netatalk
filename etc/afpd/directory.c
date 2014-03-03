@@ -1083,7 +1083,7 @@ struct path *cname(struct vol *vol, struct dir *dir, char **cpath)
     int         size = 0;
     int         toUTF8 = 0;
 
-    LOG(log_maxdebug, logtype_afpd, "came('%s'): {start}", cfrombstr(dir->d_fullpath));
+    LOG(log_maxdebug, logtype_afpd, "cname('%s'): {start}", cfrombstr(dir->d_fullpath));
 
     data = *cpath;
     afp_errno = AFPERR_NOOBJ;
@@ -1165,7 +1165,7 @@ struct path *cname(struct vol *vol, struct dir *dir, char **cpath)
             return NULL;
         }
 
-        LOG(log_maxdebug, logtype_afpd, "came('%s'): {node: '%s}", cfrombstr(dir->d_fullpath), ret.u_name);
+        LOG(log_maxdebug, logtype_afpd, "cname('%s'): {node: '%s}", cfrombstr(dir->d_fullpath), ret.u_name);
 
         /* Prevent access to our special folders like .AppleDouble */
         if (check_name(vol, ret.u_name)) {
@@ -1216,14 +1216,14 @@ struct path *cname(struct vol *vol, struct dir *dir, char **cpath)
                  * this will terminate clean in while (1) because len == 0,
                  * probably afp_createfile|dir
                  */
-                LOG(log_maxdebug, logtype_afpd, "came('%s'): {leave-cnode ENOENT (possile create request): '%s'}",
+                LOG(log_maxdebug, logtype_afpd, "cname('%s'): {leave-cnode ENOENT (possile create request): '%s'}",
                     cfrombstr(dir->d_fullpath), ret.u_name);
                 continue; /* 10 */
             }
 
             switch (ret.st.st_mode & S_IFMT) {
             case S_IFREG: /* 11 */
-                LOG(log_debug, logtype_afpd, "came('%s'): {file: '%s'}",
+                LOG(log_debug, logtype_afpd, "cname('%s'): {file: '%s'}",
                     cfrombstr(dir->d_fullpath), ret.u_name);
                 if (len > 0) {
                     /* it wasn't the last part, so we have a bogus path request */
@@ -1232,10 +1232,10 @@ struct path *cname(struct vol *vol, struct dir *dir, char **cpath)
                 }
                 continue; /* continues while loop */
             case S_IFLNK: /* 12 */
-                LOG(log_debug, logtype_afpd, "came('%s'): {link: '%s'}",
+                LOG(log_debug, logtype_afpd, "cname('%s'): {link: '%s'}",
                     cfrombstr(dir->d_fullpath), ret.u_name);
                 if (len > 0) {
-                    LOG(log_warning, logtype_afpd, "came('%s'): {symlinked dir: '%s'}",
+                    LOG(log_warning, logtype_afpd, "cname('%s'): {symlinked dir: '%s'}",
                         cfrombstr(dir->d_fullpath), ret.u_name);
                     afp_errno = AFPERR_PARAM;
                     return NULL;
@@ -1286,7 +1286,7 @@ struct path *cname(struct vol *vol, struct dir *dir, char **cpath)
         ret.d_dir = dir;
     }
 
-    LOG(log_debug, logtype_afpd, "came('%s') {end: curdir:'%s', path:'%s'}",
+    LOG(log_debug, logtype_afpd, "cname('%s') {end: curdir:'%s', path:'%s'}",
         cfrombstr(dir->d_fullpath),
         cfrombstr(curdir->d_fullpath),
         ret.u_name);
