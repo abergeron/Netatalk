@@ -1069,7 +1069,6 @@ static int ad_open_hf_v2(const char *path, int adflags, mode_t mode, struct adou
         ad_refresh(path, ad);
         /* it's not new anymore */
         ad->ad_mdp->adf_flags &= ~( O_TRUNC | O_CREAT );
-        ad->ad_mdp->adf_refcount++;
         goto EC_CLEANUP;
     }
 
